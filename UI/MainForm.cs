@@ -19,8 +19,9 @@ public sealed class MainForm : Form
     private const int StatusH = 16;
     private const int ButtonRowH = 32;
     private const int Edge = 12;
-    private const int InputW = 32, InputH = 22;
-    private const int NoteRowH = 22; // 隐形备注行（三种模式共用）
+    private const int InputW = 32, InputH = 20; // 输入框可视行高（框内文字上下留白对称）
+    private const int NoteRowH = 20;            // 备注输入行可视高度（三种模式共用）
+    private const int Pitch = 40;               // 数字框中心间距（中间留冒号位）
 
     private readonly TimerEngine _engine;
     private readonly AppSettings _settings;
@@ -109,26 +110,31 @@ public sealed class MainForm : Form
         return new TextBox
         {
             BorderStyle = BorderStyle.None,
+            AutoSize = false, // 高度由 InputBounds 决定（= 文字行高，见 LayoutInputs）
             // 必须左对齐：居中文字会让光标渲染错位（跳到框最前面）
             TextAlign = HorizontalAlignment.Left,
             MaxLength = 2,
             Font = new Font(PaperTheme.FontName, 9.5f),
-            TabStop = true,
+            // 不让 TabStop 参与自动抢焦点：窗体每次被激活（启动/弹层关闭/托盘唤回）
+            // 都会把焦点塞给第一个可见输入框，出现未点击的闪烁光标。
+            // 置 false 后只有鼠标点击才会聚焦输入框，点击行为完全不受影响。
+            TabStop = false,
             Visible = false,
         };
     }
 
-    /// <summary>隐形备注框（三种模式共用）：无边框同底色，空内容时不可见，悬浮时才露底横线。</summary>
+    /// <summary>备注输入框（三种模式共用）：无系统边框，外层由主窗口统一描可见框。</summary>
     private static TextBox MakeNoteInput()
     {
         return new TextBox
         {
             BorderStyle = BorderStyle.None,
-            // 左对齐 + 动态等边距：文字在框内居中，光标位置始终正确
+            AutoSize = false, // 同上：高度由 InputBounds 决定
+            // 左对齐 + 聚焦时小边距整框输入；失焦后同步为等边距实现视觉居中
             TextAlign = HorizontalAlignment.Left,
-            MaxLength = 34,
+            MaxLength = 26,
             Font = new Font(PaperTheme.FontName, 9f),
-            TabStop = true,
+            TabStop = false, // 同上：不要被窗体激活自动聚焦，仅点击时聚焦
             Visible = false,
         };
     }
@@ -159,8 +165,7 @@ public sealed class MainForm : Form
         var oldNote = _txtNote.Font;
         _txtNote.Font = new Font(PaperTheme.FontName, (float)(9 * inputSize));
         oldNote.Dispose();
-        SyncInputMargins();
-        SyncNoteMargins();
+        LayoutInputs(); // 行高随字号变化，控件在框内重新居中
 
         _fontFitW = W;
         _fontFitH = H;
@@ -185,16 +190,7 @@ public sealed class MainForm : Form
                 _clickWasFocused = false;
             };
             tb.Enter += (_, _) => tb.SelectAll(); // Tab 进入同样全选
-            // 每敲一个数字，光标都停在最后一位后面（可继续输入或删除）
-            tb.TextChanged += (_, _) =>
-            {
-                if (tb.Focused && !_syncingInputs)
-                {
-                    tb.SelectionStart = tb.Text.Length;
-                    tb.SelectionLength = 0;
-                }
-                SetInputMargins(tb); // 随当前文字宽度动态居中（单字符也不偏左）
-            };
+            // 输入期间不重算边距、不挪光标：点哪里光标就在哪里，文字原地增长
             // 离开时把输入规整回两位数字（如 3 → 03）
             tb.Leave += (_, _) =>
             {
@@ -204,12 +200,24 @@ public sealed class MainForm : Form
             Controls.Add(tb);
         }
 
-        // 隐形备注：空时不露痕迹，悬浮才现底横线；文字随边距动态居中
-        _txtNote.TextChanged += (_, _) => { SyncNoteMargins(); Invalidate(); };
+        // 备注框：聚焦时左对齐整框输入（边距不冻结），失焦才整体居中展示
+        _txtNote.TextChanged += (_, _) => Invalidate();
         _txtNote.MouseEnter += (_, _) => { _noteHover = true; Invalidate(); };
         _txtNote.MouseLeave += (_, _) => { _noteHover = false; Invalidate(); };
-        _txtNote.Enter += (_, _) => { _txtNote.ForeColor = PaperTheme.Current.Text; Invalidate(); };
-        _txtNote.Leave += (_, _) => { _txtNote.ForeColor = PaperTheme.Current.WeakText; Invalidate(); };
+        _txtNote.Enter += (_, _) =>
+        {
+            _txtNote.ForeColor = PaperTheme.Current.Text;
+            // 无论有无旧文字都重置为小边距：聚焦即从框左开始、整框宽度都可输入
+            // （旧实现只在空框时重置，带文字聚焦会沿用居中的大边距，输入被挤进窄区）
+            SetNoteMargins(4, 4);
+            Invalidate();
+        };
+        _txtNote.Leave += (_, _) =>
+        {
+            _txtNote.ForeColor = PaperTheme.Current.WeakText;
+            SyncNoteMargins(); // 失焦后文字在框内居中
+            Invalidate();
+        };
         Controls.Add(_txtNote);
     }
 
@@ -440,6 +448,8 @@ public sealed class MainForm : Form
         {
             _syncingInputs = false;
         }
+        // 文本规整后按实际内容重新水平居中（正在编辑的框不受影响：文字未变）
+        SyncInputMargins();
     }
 
     /// <summary>正在编辑的输入框不打断（避免打字时光标被拽走）；其余框规整为两位。</summary>
@@ -474,16 +484,14 @@ public sealed class MainForm : Form
     private int H => ClientSize.Height;
     // 计时一旦开始，隐藏设置区（输入框/备注/模式下拉），只展示核心内容；重置后恢复
     private bool ShowSettings => _engine.State == RunState.Stopped;
-    // 自下而上：状态栏 → 按钮行 → 隐形备注行 → 输入行 → 大数字区
-    // 备注底横线距按钮 9px，数字行与备注行相距 7px：底部堆叠保持透气
+    // 自下而上：状态栏 → 按钮行 → 备注行 → 输入行 → 大数字区
+    // 备注框底边距按钮约 10px、数字行距备注行约 6px：叠放紧凑但留一丝透气
     private int ButtonsTop => H - StatusH - ButtonRowH - 4;
-    private int NoteRowY => ButtonsTop - NoteRowH - 11;
-    private int RowY => NoteRowY - InputH - 7;
+    private int NoteRowY => ButtonsTop - NoteRowH - 12;
+    private int RowY => NoteRowY - InputH - 10;
     private int TimeBottom => ShowSettings ? RowY - 12 : ButtonsTop - 10;
-    private int TargetSX => (W - 236) / 2;
-    private int CountSX => (W - 104) / 2;
-
-    private Rectangle TimeArea => new(Edge, TitleBarH + 6, W - Edge * 2, TimeBottom - (TitleBarH + 6));
+    private int TargetSX => (W - 240) / 2;
+    private int CountSX => (W - 112) / 2;
     private Rectangle StatusRect => new(Edge, H - StatusH, W - Edge * 2, StatusH);
     private Rectangle CloseRect => new(W - 32, 4, 24, 22);
     private Rectangle MinRect => new(W - 58, 4, 24, 22);
@@ -493,58 +501,126 @@ public sealed class MainForm : Form
     private Rectangle ResetBtnRect => new((W - 178) / 2, ButtonsTop, 60, 32);
 
     private Rectangle RCountH => new(CountSX, RowY, InputW, InputH);
-    private Rectangle RCountM => new(CountSX + 36, RowY, InputW, InputH);
-    private Rectangle RCountS => new(CountSX + 72, RowY, InputW, InputH);
+    private Rectangle RCountM => new(CountSX + Pitch, RowY, InputW, InputH);
+    private Rectangle RCountS => new(CountSX + Pitch * 2, RowY, InputW, InputH);
     private Rectangle RTargetH => new(TargetSX, RowY, InputW, InputH);
-    private Rectangle RTargetM => new(TargetSX + 36, RowY, InputW, InputH);
-    private Rectangle RToday => new(TargetSX + 76, RowY, 34, InputH);
-    private Rectangle RTomorrow => new(TargetSX + 112, RowY, 46, InputH);
-    private Rectangle RPick => new(TargetSX + 162, RowY, 26, InputH);
-    private Rectangle RDaily => new(TargetSX + 192, RowY, 44, InputH);
+    private Rectangle RTargetM => new(TargetSX + Pitch, RowY, InputW, InputH);
+    private Rectangle RToday => new(TargetSX + 80, RowY, 34, InputH);
+    private Rectangle RTomorrow => new(TargetSX + 116, RowY, 46, InputH);
+    private Rectangle RPick => new(TargetSX + 166, RowY, 26, InputH);
+    private Rectangle RDaily => new(TargetSX + 196, RowY, 44, InputH);
     private Rectangle NoteRect => new((W - 200) / 2, NoteRowY, 200, NoteRowH);
+    private Rectangle TimeArea => new(Edge, TitleBarH + 6, W - Edge * 2, TimeBottom - (TitleBarH + 6));
+
+    /// <summary>
+    /// 输入控件只占文字行高、在可视行内垂直居中。
+    /// 原生单行 Edit 的文字永远贴着控件顶部绘制（墨迹距顶约 4px，多出的留白全在底部），
+    /// 若控件直接铺满 20px 可视框，文字下方会多出一截空隙、看起来偏上；
+    /// 把控件高度压到文字行高后，文字恰好填满控件，视觉上即在框内真正居中。
+    /// 控件上下各约 2px 的边条由 OnMouseDown 转发点击，交互不受影响。
+    /// </summary>
+    private static Rectangle InputBounds(Rectangle r, TextBox tb)
+    {
+        // 控件高 = 文字行高（默认 9.25pt ≈ 16px），行高随字号缩放时可长到占满 20px 框
+        var row = Math.Clamp(tb.Font.Height, 12, InputH);
+        return new Rectangle(r.X, r.Y + (r.Height - row) / 2, r.Width, row);
+    }
 
     private void LayoutInputs()
     {
-        _txtNote.Bounds = NoteRect;
+        _txtNote.Bounds = InputBounds(NoteRect, _txtNote);
         SyncNoteMargins();
         if (_engine.Mode == TimerMode.CountDown)
         {
-            _txtH.Bounds = RCountH;
-            _txtM.Bounds = RCountM;
-            _txtS.Bounds = RCountS;
+            _txtH.Bounds = InputBounds(RCountH, _txtH);
+            _txtM.Bounds = InputBounds(RCountM, _txtM);
+            _txtS.Bounds = InputBounds(RCountS, _txtS);
         }
         else if (_engine.Mode == TimerMode.TargetTime)
         {
-            _txtTH.Bounds = RTargetH;
-            _txtTM.Bounds = RTargetM;
+            _txtTH.Bounds = InputBounds(RTargetH, _txtTH);
+            _txtTM.Bounds = InputBounds(RTargetM, _txtTM);
         }
+        // 每次布局后都重设数字框水平居中边距（设置 Bounds / 字体变化可能重置内边距）
+        SyncInputMargins();
     }
 
-    /// <summary>左对齐 + 左右等边距：数字在框内居中显示，光标渲染位置始终正确。</summary>
+    /// <summary>点击落在哪个输入框的可视边条上（控件自身收到的点击不会到这里）。</summary>
+    private TextBox? InputBoxAt(Point pt)
+    {
+        if (!ShowSettings) return null;
+        var tb = _engine.Mode switch
+        {
+            TimerMode.CountDown => BoxAt(_txtH, RCountH, pt) ?? BoxAt(_txtM, RCountM, pt) ?? BoxAt(_txtS, RCountS, pt),
+            TimerMode.TargetTime => BoxAt(_txtTH, RTargetH, pt) ?? BoxAt(_txtTM, RTargetM, pt),
+            _ => null,
+        };
+        return tb ?? BoxAt(_txtNote, NoteRect, pt);
+    }
+
+    private static TextBox? BoxAt(TextBox tb, Rectangle r, Point pt)
+    {
+        if (!tb.Visible) return null;
+        // 可视框内但控件外 = 控件上下各 2px 的边条
+        return r.Contains(pt) && !tb.Bounds.Contains(pt) ? tb : null;
+    }
+
+    /// <summary>
+    /// 句柄就绪后补一次布局与边距同步：
+    /// 构造函数里设置的 Bounds / 字体在句柄创建前不会真正生效，
+    /// 而 EM_SETMARGINS 又必须在句柄创建后发送，否则文字会贴左。
+    /// </summary>
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        BeginInvoke(() =>
+        {
+            if (IsDisposed) return;
+            LayoutInputs();
+            SyncNoteMargins();
+            Invalidate();
+        });
+    }
+
+    /// <summary>数字框固定边距：按两位数字宽度一次算好，输入过程不再变动（光标稳定）。</summary>
     private void SyncInputMargins()
     {
         foreach (var tb in _inputs) SetInputMargins(tb);
     }
 
+    /// <summary>
+    /// 按框内实际文字把数字水平居中（两位数字宽度因字形而异，
+    /// 固定"88"宽度会令窄数字偏左）。非输入状态下调用。
+    /// </summary>
     private static void SetInputMargins(TextBox tb)
     {
         if (!tb.IsHandleCreated) return;
-        // 按当前文字宽度计算等边距：数字始终在框内水平居中，光标渲染位置也正确
-        var probe = tb.Text.Length == 0 ? "0" : tb.Text;
-        var w = TextRenderer.MeasureText(probe, tb.Font).Width;
-        var margin = Math.Max(0, (InputW - w) / 2);
-        SendMessage(tb.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
-            (IntPtr)((margin << 16) | (margin & 0xFFFF)));
+        // NoPadding：MeasureText 默认自带左右约 8px 额外边距，小字号下会严重高估宽度
+        var text = tb.Text.Length == 1 ? tb.Text + tb.Text : tb.Text.Length >= 2 ? tb.Text : "88";
+        var w = TextRenderer.MeasureText(text, tb.Font, Size.Empty, TextFormatFlags.NoPadding).Width;
+        var margin = Math.Max(2, (InputW - w) / 2);
+        SetMargins(tb, margin, margin);
     }
 
-    /// <summary>备注文字默认居中：左对齐 + 随文字宽度动态计算的等边距，光标位置始终正确。</summary>
+    private static void SetMargins(TextBox tb, int left, int right)
+    {
+        SendMessage(tb.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
+            (IntPtr)((right << 16) | (left & 0xFFFF)));
+    }
+
+    /// <summary>备注失焦 / 布局 / 换字体时调用一次：文字在框内水平居中（聚焦输入时保持小边距左对齐）。</summary>
     private void SyncNoteMargins()
     {
-        if (!_txtNote.IsHandleCreated) return;
-        var w = TextRenderer.MeasureText(_txtNote.Text, _txtNote.Font).Width;
+        if (!_txtNote.IsHandleCreated || _txtNote.Focused) return; // 输入中不动边距
+        var w = TextRenderer.MeasureText(_txtNote.Text, _txtNote.Font, Size.Empty, TextFormatFlags.NoPadding).Width;
         var margin = Math.Max(0, (NoteRect.Width - w) / 2);
-        SendMessage(_txtNote.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
-            (IntPtr)((margin << 16) | (margin & 0xFFFF)));
+        SetNoteMargins(margin, margin);
+    }
+
+    private void SetNoteMargins(int left, int right)
+    {
+        if (!_txtNote.IsHandleCreated) return;
+        SetMargins(_txtNote, left, right);
     }
 
     protected override void OnResize(EventArgs e)
@@ -767,19 +843,10 @@ public sealed class MainForm : Form
         using var brush = new SolidBrush(color);
         g.DrawString(text, font, brush, (W - tw) / 2f, y);
 
-        // 计时中（三种模式一致）：备注提示“正在做什么”，紧跟数字下方，不贴底部
-        if (!_alerting && _engine.State != RunState.Stopped && _txtNote.Text.Length > 0)
+        // 计时中与到点提醒（三种模式一致）：备注提示放在数字区底部，永远同一位置
+        if (_engine.State != RunState.Stopped && _txtNote.Text.Length > 0)
         {
-            using var weak = new SolidBrush(p.WeakText);
-            var nw = TextWidth(g, _txtNote.Text, _fSmall);
-            var ny = TimeArea.Top + TimeArea.Height / 2f + font.Size * 0.55f + 8;
-            g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, ny);
-        }
-
-        // 到点：把隐形备注打到提醒画面正中央下方（任何模式）
-        if (_alerting && _txtNote.Text.Length > 0)
-        {
-            using var weak = new SolidBrush(Blend(p.Danger, p.WeakText, 0.45));
+            using var weak = new SolidBrush(_alerting ? Blend(p.Danger, p.WeakText, 0.45) : p.WeakText);
             var nw = TextWidth(g, _txtNote.Text, _fSmall);
             g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
         }
@@ -805,32 +872,45 @@ public sealed class MainForm : Form
                 }
                 break;
         }
-        DrawNoteUnderline(g, p);
+        DrawInputFrame(g, p, NoteRect, _txtNote.Focused, _noteHover); // 备注输入框
     }
 
     private void DrawCountdownSettings(Graphics g, Palette p)
     {
-        using var weak = new SolidBrush(p.WeakText);
-        g.DrawString(":", _fSmall, weak, CountSX + 33, RowY + (InputH - _fSmall.Height) / 2f - 2);
-        g.DrawString(":", _fSmall, weak, CountSX + 69, RowY + (InputH - _fSmall.Height) / 2f - 2);
+        DrawColon(g, p, CountSX + 36);
+        DrawColon(g, p, CountSX + 76);
+        DrawInputFrame(g, p, RCountH, _txtH.Focused, false);
+        DrawInputFrame(g, p, RCountM, _txtM.Focused, false);
+        DrawInputFrame(g, p, RCountS, _txtS.Focused, false);
     }
 
-    /// <summary>隐形备注底横线：只有悬浮 / 聚焦时才露面，其余时间完全隐身。</summary>
-    private void DrawNoteUnderline(Graphics g, Palette p)
+    /// <summary>两个数字框之间的冒号，垂直与输入框对齐。</summary>
+    private void DrawColon(Graphics g, Palette p, float centerX)
     {
-        if (!_noteHover && !_txtNote.Focused) return;
+        using var weak = new SolidBrush(p.WeakText);
+        var tw = TextWidth(g, ":", _fSmall);
+        g.DrawString(":", _fSmall, weak, centerX - tw / 2f, RowY + (InputH - _fSmall.Height) / 2f - 2);
+    }
 
-        var w = _txtNote.Focused ? 2f : 1.5f;
-        var c = _txtNote.Focused ? p.Active : p.WeakText;
-        using var pen = new Pen(c, w);
-        var r = NoteRect;
-        g.DrawLine(pen, r.X - 4, r.Bottom + 2, r.Right + 4, r.Bottom + 2);
+    /// <summary>输入框可见边框：外扩 2px 描圆角框，圆角处不会被输入框的方角遮挡。</summary>
+    private static void DrawInputFrame(Graphics g, Palette p, Rectangle r, bool focused, bool hover)
+    {
+        var f = new RectangleF(r.X - 2f, r.Y - 2f, r.Width + 4f, r.Height + 4f);
+        using var path = RoundRectPathF(f, 4.5f);
+        using var pen = new Pen(
+            focused ? p.Active
+                : hover ? PaperTheme.WithAlpha(p.PaperBorder, 240)
+                : PaperTheme.WithAlpha(p.PaperBorder, 175),
+            focused ? 1.6f : 1.2f);
+        g.DrawPath(pen, path);
     }
 
     private void DrawTargetSettings(Graphics g, Palette p)
     {
         using var weak = new SolidBrush(p.WeakText);
-        g.DrawString(":", _fSmall, weak, TargetSX + 33, RowY + (InputH - _fSmall.Height) / 2f - 2);
+        DrawColon(g, p, TargetSX + 36);
+        DrawInputFrame(g, p, RTargetH, _txtTH.Focused, false);
+        DrawInputFrame(g, p, RTargetM, _txtTM.Focused, false);
 
         var todaySel = !_targetDateIsCustom && _targetDate == DateTime.Today;
         var tomorrowSel = !_targetDateIsCustom && _targetDate == DateTime.Today.AddDays(1);
@@ -838,7 +918,7 @@ public sealed class MainForm : Form
         DrawChipButton(g, p, RTomorrow, Locale.T("明天", "Tomorrow"), _hover == Zone.Tomorrow, _pressed == Zone.Tomorrow, tomorrowSel);
         DrawChipButton(g, p, RPick, "…", _hover == Zone.Pick, _pressed == Zone.Pick, _targetDateIsCustom);
 
-        var checkRect = new Rectangle(RDaily.X + 2, RowY + 5, 14, 14);
+        var checkRect = new Rectangle(RDaily.X + 2, RowY + (InputH - 14) / 2, 14, 14);
         var checkHover = _hover == Zone.Daily;
         using (var path = RoundedRectPath(checkRect, 3))
         {
@@ -1053,6 +1133,18 @@ public sealed class MainForm : Form
     {
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
+        // 输入控件比可视框上下各窄约 2px（为文字垂直居中）：落在边条上的点击转给输入框
+        var box = InputBoxAt(e.Location);
+        if (box != null)
+        {
+            if (!box.Focused)
+            {
+                box.Focus();
+                box.SelectAll(); // 与点击控件本身一致：首次点击全选
+            }
+            Invalidate();
+            return;
+        }
         ActiveControl = null; // 点击输入框以外的区域时，收起输入框光标
         var z = HitTest(e.Location);
         if (z == Zone.None)
@@ -1231,6 +1323,18 @@ public sealed class MainForm : Form
     private static GraphicsPath RoundedRectPath(Rectangle r, int radius)
     {
         var d = radius * 2;
+        var path = new GraphicsPath();
+        path.AddArc(r.X, r.Y, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    private static GraphicsPath RoundRectPathF(RectangleF r, float radius)
+    {
+        var d = radius * 2f;
         var path = new GraphicsPath();
         path.AddArc(r.X, r.Y, d, d, 180, 90);
         path.AddArc(r.Right - d, r.Y, d, d, 270, 90);

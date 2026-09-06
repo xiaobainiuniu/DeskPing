@@ -10,23 +10,24 @@ namespace DeskPing.UI;
 
 /// <summary>
 /// 主窗口：全自绘、无边框圆角纸片 + 系统阴影。
+/// 紧凑布局：模式切换收进标题栏下拉，窗口默认约 308×280。
 /// 支持拖动、边角缩放、置顶；所有绘制按需进行，空闲时 CPU 为零。
 /// </summary>
 public sealed class MainForm : Form
 {
-    private const int TitleBarH = 38;
-    private const int TabH = 34;
-    private const int StatusH = 24;
-    private const int SettingsRowH = 48;
-    private const int ButtonRowH = 40;
+    private const int TitleBarH = 36;
+    private const int StatusH = 20;
+    private const int SettingsRowH = 40;
+    private const int ButtonRowH = 38;
     private const int Edge = 14;
-    private const int InputW = 36, InputH = 26, ChipW = 46, Gap = 6;
+    private const int InputW = 32, InputH = 24, Gap = 6;
 
     private readonly TimerEngine _engine;
     private readonly AppSettings _settings;
     private readonly Action _onFirstHide;
 
     private readonly TextBox _txtH, _txtM, _txtS, _txtTH, _txtTM;
+    private readonly TextBox[] _inputs;
     private readonly WinFormsTimer _alertTimer;
     private readonly WinFormsTimer _flashTimer;
 
@@ -39,11 +40,15 @@ public sealed class MainForm : Form
     private string _statusOverride = "";
     private Zone _hover = Zone.None, _pressed = Zone.None;
     private bool _syncingInputs;
+    private bool _clickWasFocused;
     private int _fontFitW, _fontFitH;
 
-    private Font _fTitle = null!, _fTab = null!, _fBig = null!, _fBigAlert = null!, _fSmall = null!, _fBtn = null!;
+    private Font _fTitle = null!, _fBig = null!, _fBigAlert = null!, _fSmall = null!, _fBtn = null!;
     private Icon? _formIcon;
     private IntPtr _formIconHandle;
+
+    private ModePopup? _modePopup;
+    private bool _suppressPopupReopen;
 
     public event Action? ThemeChanged;
     public bool Pinned => _pinned;
@@ -56,7 +61,7 @@ public sealed class MainForm : Form
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
-        MinimumSize = new Size(330, 280);
+        MinimumSize = new Size(300, 252);
         DoubleBuffered = true;
         ShowInTaskbar = true;
 
@@ -66,14 +71,16 @@ public sealed class MainForm : Form
         _txtS = MakeInput();
         _txtTH = MakeInput();
         _txtTM = MakeInput();
+        _inputs = new[] { _txtH, _txtM, _txtS, _txtTH, _txtTM };
         MakeFonts();
         RebuildFonts();
         SetupInputs();
 
-        // 尺寸：恢复上次，否则默认
-        var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 384, 312);
-        var w = settings.WindowW > 0 ? Math.Min(settings.WindowW, wa.Width - 24) : 384;
-        var h = settings.WindowH > 0 ? Math.Min(settings.WindowH, wa.Height - 24) : 312;
+        // 尺寸：布局版本 >= 2 才恢复上次尺寸（旧版存的尺寸偏大，一次性放弃）
+        var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 308, 280);
+        var restore = settings.LayoutV >= 2 && settings.WindowW > 0 && settings.WindowH > 0;
+        var w = Math.Min(restore ? settings.WindowW : 308, wa.Width - 24);
+        var h = Math.Min(restore ? settings.WindowH : 280, wa.Height - 24);
         ClientSize = new Size(Math.Max(w, MinimumSize.Width), Math.Max(h, MinimumSize.Height));
 
         // 位置：恢复上次，否则屏幕右下角
@@ -100,7 +107,8 @@ public sealed class MainForm : Form
         return new TextBox
         {
             BorderStyle = BorderStyle.None,
-            TextAlign = HorizontalAlignment.Center,
+            // 必须左对齐：居中文字会让光标渲染错位（跳到框最前面）
+            TextAlign = HorizontalAlignment.Left,
             MaxLength = 2,
             Font = new Font(PaperTheme.FontName, 9.5f),
             TabStop = true,
@@ -111,7 +119,6 @@ public sealed class MainForm : Form
     private void MakeFonts()
     {
         _fTitle = new Font(PaperTheme.FontName, 9.5f);
-        _fTab = new Font(PaperTheme.FontName, 9.5f);
         _fSmall = new Font(PaperTheme.FontName, 8.5f);
         _fBtn = new Font(PaperTheme.FontName, 10f, FontStyle.Bold);
     }
@@ -119,11 +126,22 @@ public sealed class MainForm : Form
     /// <summary>大数字随窗口大小缩放（拖动缩放窗口时保持比例协调）。</summary>
     private void RebuildFonts()
     {
-        var scale = Math.Clamp(Math.Min(W / 384.0, H / 312.0), 0.62, 2.4);
+        var scale = Math.Clamp(Math.Min(W / 308.0, H / 280.0), 0.62, 2.4);
         _fBig?.Dispose();
         _fBigAlert?.Dispose();
-        _fBig = new Font(PaperTheme.FontName, (float)(40 * scale));
-        _fBigAlert = new Font(PaperTheme.FontName, (float)(30 * scale), FontStyle.Bold);
+        _fBig = new Font(PaperTheme.FontName, (float)(38 * scale));
+        _fBigAlert = new Font(PaperTheme.FontName, (float)(28 * scale), FontStyle.Bold);
+
+        // 输入框字号温和跟随窗口缩放（每框独立 Font 实例，替换即释放）
+        var inputSize = Math.Clamp(scale, 0.8f, 1.6f);
+        foreach (var tb in _inputs)
+        {
+            var old = tb.Font;
+            tb.Font = new Font(PaperTheme.FontName, (float)(9.5 * inputSize));
+            old.Dispose();
+        }
+        SyncInputMargins();
+
         _fontFitW = W;
         _fontFitH = H;
     }
@@ -136,20 +154,41 @@ public sealed class MainForm : Form
         _txtTH.TextChanged += (_, _) => ApplyTargetInputs();
         _txtTM.TextChanged += (_, _) => ApplyTargetInputs();
 
-        foreach (var tb in new[] { _txtH, _txtM, _txtS, _txtTH, _txtTM })
+        foreach (var tb in _inputs)
         {
             tb.KeyPress += (_, e) => e.Handled = !char.IsDigit(e.KeyChar) && e.KeyChar != '\b';
-            // 点击即全选，直接输入覆盖旧值
+            // 第一次点击：全选方便直接覆盖；再点击：光标落到末尾正常闪烁
+            tb.MouseDown += (_, _) => _clickWasFocused = tb.Focused;
             tb.MouseUp += (_, e) =>
             {
-                if (e.Button == MouseButtons.Left) tb.SelectAll();
+                if (e.Button != MouseButtons.Left) return;
+                if (!_clickWasFocused) tb.SelectAll();
+                else
+                {
+                    tb.SelectionStart = tb.Text.Length;
+                    tb.SelectionLength = 0;
+                }
+            };
+            // 每敲一个数字，光标都停在最后一位后面（可继续输入或删除）
+            tb.TextChanged += (_, _) =>
+            {
+                if (tb.Focused && !_syncingInputs)
+                {
+                    tb.SelectionStart = tb.Text.Length;
+                    tb.SelectionLength = 0;
+                }
             };
             tb.Enter += (_, _) =>
             {
                 tb.SelectAll();
                 Invalidate();
             };
-            tb.Leave += (_, _) => Invalidate();
+            // 离开时把输入规整回两位数字（如 3 → 03）
+            tb.Leave += (_, _) =>
+            {
+                UpdateInputsFromEngine();
+                Invalidate();
+            };
             Controls.Add(tb);
         }
     }
@@ -181,6 +220,7 @@ public sealed class MainForm : Form
     public void SetMode(TimerMode mode)
     {
         StopAlert();
+        CloseModePopup();
         _engine.SetMode(mode);
         UpdateModeUi();
         Invalidate();
@@ -230,6 +270,7 @@ public sealed class MainForm : Form
         _alerting = true;
         _animPhase = 0;
         _soundCountdown = 0;
+        CloseModePopup();
 
         if (!Visible || WindowState == FormWindowState.Minimized) ShowWindow();
         TopMost = true; // 提醒期间保证可见
@@ -254,12 +295,32 @@ public sealed class MainForm : Form
 
     private void HideToTray()
     {
+        CloseModePopup();
         Hide();
         if (!_everHidden)
         {
             _everHidden = true;
             _onFirstHide();
         }
+    }
+
+    // ---------- 模式下拉 ----------
+
+    private void OpenModePopup()
+    {
+        _modePopup?.Close();
+        _modePopup = new ModePopup(_engine.Mode, PointToScreen(new Point(ModeBtnRect.Left, ModeBtnRect.Bottom + 3)),
+            mode => SetMode(mode));
+        _modePopup.FormClosed += (_, _) => _modePopup = null;
+        _modePopup.Show();
+        Invalidate();
+    }
+
+    private void CloseModePopup()
+    {
+        var popup = _modePopup;
+        _modePopup = null;
+        if (popup != null && !popup.IsDisposed) popup.Close();
     }
 
     // ---------- 引擎事件 ----------
@@ -344,13 +405,13 @@ public sealed class MainForm : Form
         try
         {
             var d = _engine.Duration;
-            _txtH.Text = d.Hours.ToString();
-            _txtM.Text = d.Minutes.ToString("D2");
-            _txtS.Text = d.Seconds.ToString("D2");
+            SetInputText(_txtH, d.Hours.ToString("D2"));
+            SetInputText(_txtM, d.Minutes.ToString("D2"));
+            SetInputText(_txtS, d.Seconds.ToString("D2"));
 
             var t = _engine.Target;
-            _txtTH.Text = t.Hour.ToString("D2");
-            _txtTM.Text = t.Minute.ToString("D2");
+            SetInputText(_txtTH, t.Hour.ToString("D2"));
+            SetInputText(_txtTM, t.Minute.ToString("D2"));
 
             _targetDate = t.Date;
             _targetDateIsCustom = t.Date != DateTime.Today && t.Date != DateTime.Today.AddDays(1);
@@ -359,6 +420,14 @@ public sealed class MainForm : Form
         {
             _syncingInputs = false;
         }
+    }
+
+    /// <summary>正在编辑的输入框不打断（避免打字时光标被拽走）；其余框规整为两位。</summary>
+    private static void SetInputText(TextBox tb, string text)
+    {
+        if (tb.Focused) return;
+        if (tb.Text != text) tb.Text = text;
+        if (tb.SelectionStart != tb.Text.Length) tb.SelectionStart = tb.Text.Length;
     }
 
     private void UpdateModeUi()
@@ -375,30 +444,30 @@ public sealed class MainForm : Form
 
     private int W => ClientSize.Width;
     private int H => ClientSize.Height;
-    private int SettingsTop => H - StatusH - ButtonRowH - 12 - SettingsRowH;
+    private int SettingsTop => H - StatusH - ButtonRowH - 8 - SettingsRowH;
     private int RowY => SettingsTop + (SettingsRowH - InputH) / 2 + 1;
-    private int ButtonsTop => H - StatusH - ButtonRowH - 6;
-    private int CountdownSX => (W - 302) / 2;
-    private int TargetSX => (W - 312) / 2;
+    private int ButtonsTop => H - StatusH - ButtonRowH - 4;
+    private int SettingsSX => (W - 256) / 2;
 
-    private Rectangle TimeArea => new(Edge, TitleBarH + TabH + 4, W - Edge * 2, SettingsTop - 8 - (TitleBarH + TabH + 4));
+    private Rectangle TimeArea => new(Edge, TitleBarH + 6, W - Edge * 2, SettingsTop - 14 - (TitleBarH + 6));
     private Rectangle StatusRect => new(Edge, H - StatusH, W - Edge * 2, StatusH);
-    private Rectangle CloseRect => new(W - 40, 7, 28, 24);
-    private Rectangle MinRect => new(W - 76, 7, 30, 24);
-    private Rectangle PinRect => new(W - 112, 7, 30, 24);
-    private Rectangle MainBtnRect => new(_alerting ? (W - 150) / 2 : (W - 208) / 2 + 78, ButtonsTop, _alerting ? 150 : 130, 38);
-    private Rectangle ResetBtnRect => new((W - 208) / 2, ButtonsTop, 68, 38);
+    private Rectangle CloseRect => new(W - 40, 7, 28, 22);
+    private Rectangle MinRect => new(W - 74, 7, 28, 22);
+    private Rectangle PinRect => new(W - 108, 7, 28, 22);
+    private Rectangle ModeBtnRect => new(92, 6, 96, 24);
+    private Rectangle MainBtnRect => new(_alerting ? (W - 150) / 2 : (W - 194) / 2 + 74, ButtonsTop, _alerting ? 150 : 120, 38);
+    private Rectangle ResetBtnRect => new((W - 194) / 2, ButtonsTop, 64, 38);
 
-    private Rectangle RCountH => new(CountdownSX, RowY, InputW, InputH);
-    private Rectangle RCountM => new(CountdownSX + 46, RowY, InputW, InputH);
-    private Rectangle RCountS => new(CountdownSX + 92, RowY, InputW, InputH);
-    private Rectangle RTargetH => new(TargetSX, RowY, InputW, InputH);
-    private Rectangle RTargetM => new(TargetSX + 46, RowY, InputW, InputH);
-    private Rectangle RPreset(int i) => new(CountdownSX + 152 + i * (ChipW + Gap), RowY, ChipW, InputH);
-    private Rectangle RToday => new(TargetSX + 96, RowY, ChipW, InputH);
-    private Rectangle RTomorrow => new(TargetSX + 148, RowY, ChipW, InputH);
-    private Rectangle RPick => new(TargetSX + 200, RowY, ChipW, InputH);
-    private Rectangle RDaily => new(TargetSX + 254, RowY, 58, InputH);
+    private Rectangle RCountH => new(SettingsSX, RowY, InputW, InputH);
+    private Rectangle RCountM => new(SettingsSX + 40, RowY, InputW, InputH);
+    private Rectangle RCountS => new(SettingsSX + 80, RowY, InputW, InputH);
+    private Rectangle RTargetH => new(SettingsSX, RowY, InputW, InputH);
+    private Rectangle RTargetM => new(SettingsSX + 40, RowY, InputW, InputH);
+    private Rectangle RPreset(int i) => new(SettingsSX + 118 + i * (42 + Gap), RowY, 42, InputH);
+    private Rectangle RToday => new(SettingsSX + 78, RowY, 40, InputH);
+    private Rectangle RTomorrow => new(SettingsSX + 124, RowY, 40, InputH);
+    private Rectangle RPick => new(SettingsSX + 170, RowY, 32, InputH);
+    private Rectangle RDaily => new(SettingsSX + 208, RowY, 48, InputH);
 
     private void LayoutInputs()
     {
@@ -415,6 +484,22 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>左对齐 + 左右等边距：数字在框内居中显示，光标渲染位置始终正确。</summary>
+    private void SyncInputMargins()
+    {
+        foreach (var tb in _inputs) SetInputMargins(tb);
+    }
+
+    private static void SetInputMargins(TextBox tb)
+    {
+        var w = 0;
+        using (var g = tb.CreateGraphics())
+            w = (int)Math.Ceiling(g.MeasureString("88", tb.Font).Width);
+        var margin = Math.Max(0, (InputW - w) / 2 - 1);
+        SendMessage(tb.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
+            (IntPtr)((margin << 16) | (margin & 0xFFFF)));
+    }
+
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
@@ -425,6 +510,13 @@ public sealed class MainForm : Form
         Invalidate();
     }
 
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        // 系统缩放完字体后，重新同步输入框边距
+        if (IsHandleCreated) BeginInvoke((Action)SyncInputMargins);
+    }
+
     // ---------- 主题 ----------
 
     private void ApplyTheme()
@@ -432,7 +524,7 @@ public sealed class MainForm : Form
         var p = PaperTheme.Current;
         BackColor = p.Paper;
         ForeColor = p.Text;
-        foreach (var tb in new[] { _txtH, _txtM, _txtS, _txtTH, _txtTM })
+        foreach (var tb in _inputs)
         {
             tb.BackColor = p.Paper;
             tb.ForeColor = p.Text;
@@ -479,7 +571,6 @@ public sealed class MainForm : Form
 
         DrawChrome(g, p);
         DrawTitleBar(g, p);
-        DrawTabs(g, p);
         DrawTime(g, p);
         DrawSettings(g, p);
         DrawButtons(g, p);
@@ -506,10 +597,7 @@ public sealed class MainForm : Form
         }
 
         using (var line = new Pen(PaperTheme.WithAlpha(p.PaperBorder, 110), 1f))
-        {
             g.DrawLine(line, 14, TitleBarH, W - 14, TitleBarH);
-            g.DrawLine(line, 14, TitleBarH + TabH, W - 14, TitleBarH + TabH);
-        }
 
         // 右下角缩放手柄
         using (var grip = new Pen(PaperTheme.WithAlpha(p.WeakText, 110), 1f))
@@ -521,15 +609,46 @@ public sealed class MainForm : Form
 
     private void DrawTitleBar(Graphics g, Palette p)
     {
-        // 小圆点 + 应用名
         using (var dot = new SolidBrush(p.Active))
             g.FillEllipse(dot, 16, TitleBarH / 2f - 3, 6, 6);
         using (var brush = new SolidBrush(p.Text))
             g.DrawString("DeskPing", _fTitle, brush, 28, (TitleBarH - _fTitle.Height) / 2f + 1);
 
+        DrawModeButton(g, p);
         DrawPinButton(g, p);
         DrawTitleButton(g, p, MinRect, "−", _hover == Zone.Minimize, _pressed == Zone.Minimize);
         DrawTitleButton(g, p, CloseRect, "✕", _hover == Zone.Close, _pressed == Zone.Close);
+    }
+
+    private void DrawModeButton(Graphics g, Palette p)
+    {
+        var r = ModeBtnRect;
+        var open = _modePopup is { Visible: true };
+        using (var path = RoundedRectPath(r, 7))
+        {
+            if (open)
+            {
+                using var b = new SolidBrush(p.Code);
+                g.FillPath(b, path);
+            }
+            else if (_hover == Zone.Mode || _pressed == Zone.Mode)
+            {
+                using var b = new SolidBrush(_pressed == Zone.Mode ? PaperTheme.WithAlpha(p.Tint, 60) : PaperTheme.HoverTint());
+                g.FillPath(b, path);
+            }
+        }
+        using (var brush = new SolidBrush(p.Text))
+        {
+            var text = ModeName(_engine.Mode);
+            var tw = TextWidth(g, text, _fSmall);
+            g.DrawString(text, _fSmall, brush, r.X + 12, r.Y + (r.Height - _fSmall.Height) / 2f + 1);
+            // ▾ 小三角
+            using var tri = new Pen(p.WeakText, 1.4f);
+            var tx = r.X + 12 + tw + 8;
+            var ty = r.Y + r.Height / 2f;
+            g.DrawLine(tri, tx, ty - 2, tx + 4, ty + 2);
+            g.DrawLine(tri, tx + 4, ty + 2, tx + 8, ty - 2);
+        }
     }
 
     private void DrawPinButton(Graphics g, Palette p)
@@ -548,14 +667,13 @@ public sealed class MainForm : Form
         var cy = r.Y + r.Height / 2f;
         using (var pen = new Pen(_pinned ? p.Active : p.WeakText, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
         {
-            // 图钉针身与针头
-            g.DrawLine(pen, cx - 3.5f, cy + 5f, cx + 4.5f, cy - 3f);
-            g.DrawEllipse(pen, cx + 1.5f, cy - 7.5f, 5.5f, 5.5f);
+            g.DrawLine(pen, cx - 3.5f, cy + 4.5f, cx + 4.5f, cy - 3.5f);
+            g.DrawEllipse(pen, cx + 1.5f, cy - 7f, 5.5f, 5.5f);
         }
         if (_pinned)
         {
             using var b = new SolidBrush(p.Active);
-            g.FillEllipse(b, cx + 2.5f, cy - 6.5f, 3.5f, 3.5f);
+            g.FillEllipse(b, cx + 2.5f, cy - 6f, 3.5f, 3.5f);
         }
     }
 
@@ -576,43 +694,6 @@ public sealed class MainForm : Form
             {
                 g.DrawLine(pen, cx - 4.5f, cy - 4.5f, cx + 4.5f, cy + 4.5f);
                 g.DrawLine(pen, cx - 4.5f, cy + 4.5f, cx + 4.5f, cy - 4.5f);
-            }
-        }
-    }
-
-    private void DrawTabs(Graphics g, Palette p)
-    {
-        var modes = new[] { TimerMode.CountUp, TimerMode.CountDown, TimerMode.TargetTime };
-        var names = new[] { "正计时", "倒计时", "目标时刻" };
-        for (var i = 0; i < 3; i++)
-        {
-            var r = new Rectangle(i * (W / 3), TitleBarH, W / 3, TabH);
-            var zone = i == 0 ? Zone.Tab1 : i == 1 ? Zone.Tab2 : Zone.Tab3;
-            var hover = _hover == zone;
-            var active = _engine.Mode == modes[i];
-
-            using (var path = RoundedRectPath(new Rectangle(r.X + 10, r.Y + 3, r.Width - 20, r.Height - 6), 7))
-            {
-                if (hover && !active)
-                {
-                    using var b = new SolidBrush(PaperTheme.HoverTint());
-                    g.FillPath(b, path);
-                }
-            }
-
-            using (var brush = new SolidBrush(active ? p.Text : p.WeakText))
-            {
-                var text = names[i];
-                var tw = TextWidth(g, text, _fTab);
-                g.DrawString(text, _fTab, brush, r.X + (r.Width - tw) / 2f, r.Y + (r.Height - _fTab.Height) / 2f + 1);
-            }
-
-            if (active)
-            {
-                using var brush = new SolidBrush(p.Active);
-                var tw = TextWidth(g, names[i], _fTab);
-                var uw = Math.Max(28, tw + 10);
-                g.FillRoundedRectangle(brush, new RectangleF(r.X + (r.Width - uw) / 2f, r.Bottom - 5, uw, 3), 1.5f);
             }
         }
     }
@@ -645,7 +726,7 @@ public sealed class MainForm : Form
             using var weak = new SolidBrush(p.WeakText);
             var hint = "剩余时间";
             var hw = TextWidth(g, hint, _fSmall);
-            g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeArea.Bottom - _fSmall.Height - 8);
+            g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
         }
     }
 
@@ -673,8 +754,8 @@ public sealed class MainForm : Form
     private void DrawCountdownSettings(Graphics g, Palette p)
     {
         using var weak = new SolidBrush(p.WeakText);
-        g.DrawString(":", _fSmall, weak, CountdownSX + 40, RowY + (InputH - _fSmall.Height) / 2f - 2);
-        g.DrawString(":", _fSmall, weak, CountdownSX + 94, RowY + (InputH - _fSmall.Height) / 2f - 2);
+        g.DrawString(":", _fSmall, weak, SettingsSX + 32, RowY + (InputH - _fSmall.Height) / 2f - 2);
+        g.DrawString(":", _fSmall, weak, SettingsSX + 72, RowY + (InputH - _fSmall.Height) / 2f - 2);
 
         DrawInputUnderline(g, p, _txtH);
         DrawInputUnderline(g, p, _txtM);
@@ -691,7 +772,7 @@ public sealed class MainForm : Form
     private void DrawTargetSettings(Graphics g, Palette p)
     {
         using var weak = new SolidBrush(p.WeakText);
-        g.DrawString(":", _fSmall, weak, TargetSX + 40, RowY + (InputH - _fSmall.Height) / 2f - 2);
+        g.DrawString(":", _fSmall, weak, SettingsSX + 32, RowY + (InputH - _fSmall.Height) / 2f - 2);
 
         DrawInputUnderline(g, p, _txtTH);
         DrawInputUnderline(g, p, _txtTM);
@@ -702,7 +783,7 @@ public sealed class MainForm : Form
         DrawChipButton(g, p, RTomorrow, "明天", _hover == Zone.Tomorrow, _pressed == Zone.Tomorrow, tomorrowSel);
         DrawChipButton(g, p, RPick, "…", _hover == Zone.Pick, _pressed == Zone.Pick, _targetDateIsCustom);
 
-        var checkRect = new Rectangle(RDaily.X + 2, RowY + 6, 14, 14);
+        var checkRect = new Rectangle(RDaily.X + 2, RowY + 5, 14, 14);
         var checkHover = _hover == Zone.Daily;
         using (var path = RoundedRectPath(checkRect, 3))
         {
@@ -721,7 +802,7 @@ public sealed class MainForm : Form
             }
         }
         using (var brush = new SolidBrush(_engine.DailyRepeat ? p.Text : p.WeakText))
-            g.DrawString("每日", _fSmall, brush, RDaily.X + 20, RowY + (InputH - _fSmall.Height) / 2f + 2);
+            g.DrawString("每日", _fSmall, brush, RDaily.X + 18, RowY + (InputH - _fSmall.Height) / 2f + 2);
     }
 
     private void DrawInputUnderline(Graphics g, Palette p, TextBox tb)
@@ -812,6 +893,13 @@ public sealed class MainForm : Form
 
     // ---------- 文案 ----------
 
+    private static string ModeName(TimerMode m) => m switch
+    {
+        TimerMode.CountUp => "正计时",
+        TimerMode.CountDown => "倒计时",
+        _ => "目标时刻",
+    };
+
     private string DisplayText()
     {
         if (_alerting) return "时间到！";
@@ -865,15 +953,14 @@ public sealed class MainForm : Form
 
     // ---------- 鼠标交互 ----------
 
-    private enum Zone { None, Close, Minimize, Pin, Tab1, Tab2, Tab3, Main, Reset, P1, P2, P3, Today, Tomorrow, Pick, Daily }
+    private enum Zone { None, Close, Minimize, Pin, Mode, Main, Reset, P1, P2, P3, Today, Tomorrow, Pick, Daily }
 
     private Zone HitTest(Point pt)
     {
         if (CloseRect.Contains(pt)) return Zone.Close;
         if (MinRect.Contains(pt)) return Zone.Minimize;
         if (PinRect.Contains(pt)) return Zone.Pin;
-        if (pt.Y >= TitleBarH && pt.Y < TitleBarH + TabH)
-            return pt.X < W / 3 ? Zone.Tab1 : pt.X < W * 2 / 3 ? Zone.Tab2 : Zone.Tab3;
+        if (ModeBtnRect.Contains(pt)) return Zone.Mode;
 
         if (MainBtnRect.Contains(pt)) return Zone.Main;
         if (!_alerting && ResetBtnRect.Contains(pt)) return Zone.Reset;
@@ -932,6 +1019,8 @@ public sealed class MainForm : Form
             }
             return;
         }
+        if (z == Zone.Mode)
+            _suppressPopupReopen = _modePopup is { Visible: true }; // 点按钮关闭弹层，别立刻重开
         _pressed = z;
         Invalidate();
     }
@@ -952,14 +1041,13 @@ public sealed class MainForm : Form
             case Zone.Pin:
                 SetPinned(!_pinned);
                 break;
-            case Zone.Tab1:
-                SetMode(TimerMode.CountUp);
-                break;
-            case Zone.Tab2:
-                SetMode(TimerMode.CountDown);
-                break;
-            case Zone.Tab3:
-                SetMode(TimerMode.TargetTime);
+            case Zone.Mode:
+                if (_suppressPopupReopen)
+                {
+                    _suppressPopupReopen = false;
+                    return;
+                }
+                OpenModePopup();
                 break;
             case Zone.Main:
                 _statusOverride = "";
@@ -1101,10 +1189,11 @@ public sealed class MainForm : Form
         {
             _engine.Ticked -= OnEngineTick;
             _engine.StateChanged -= OnEngineStateChanged;
+            CloseModePopup();
             _alertTimer.Dispose();
             _flashTimer.Dispose();
-            foreach (var f in new[] { _fTitle, _fTab, _fBig, _fBigAlert, _fSmall, _fBtn }) f.Dispose();
-            foreach (var tb in new[] { _txtH, _txtM, _txtS, _txtTH, _txtTM }) tb.Font.Dispose();
+            foreach (var f in new[] { _fTitle, _fBig, _fBigAlert, _fSmall, _fBtn }) f.Dispose();
+            foreach (var tb in _inputs) tb.Font.Dispose();
             if (_formIconHandle != IntPtr.Zero)
             {
                 DestroyIcon(_formIconHandle);
@@ -1137,6 +1226,9 @@ public sealed class MainForm : Form
         (int)(a.B + (b.B - a.B) * t));
 
     private const int CS_DROPSHADOW = 0x00020000;
+    private const int EM_SETMARGINS = 0x00D3;
+    private const int EC_LEFTMARGIN = 0x0001;
+    private const int EC_RIGHTMARGIN = 0x0002;
     private const int WM_NCLBUTTONDOWN = 0x00A1;
     private const int HTCAPTION = 2;
     private const int WM_NCHITTEST = 0x0084;
@@ -1166,19 +1258,162 @@ public sealed class MainForm : Form
         public uint uCount;
         public uint dwTimeout;
     }
-}
 
-internal static class GraphicsExtensions
-{
-    public static void FillRoundedRectangle(this Graphics g, Brush brush, RectangleF rect, float radius)
+    /// <summary>模式选择弹出层：纸张风小菜单，点外面 / 按 Esc / 选中后自动关闭。</summary>
+    private sealed class ModePopup : Form
     {
-        var d = radius * 2;
-        using var path = new GraphicsPath();
-        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
-        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
-        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
-        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        g.FillPath(brush, path);
+        private static readonly (TimerMode Mode, string Name)[] Items =
+        {
+            (TimerMode.CountUp, "正计时"),
+            (TimerMode.CountDown, "倒计时"),
+            (TimerMode.TargetTime, "目标时刻"),
+        };
+
+        private readonly TimerMode _current;
+        private readonly Action<TimerMode> _onPick;
+        private int _hover = -1;
+
+        public ModePopup(TimerMode current, Point anchorScreen, Action<TimerMode> onPick)
+        {
+            _current = current;
+            _onPick = onPick;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            ClientSize = new Size(120, Items.Length * 32 + 12);
+            DoubleBuffered = true;
+            KeyPreview = true;
+            Location = ClampToScreen(anchorScreen);
+            UpdateRoundedRegion();
+            Deactivate += (_, _) => Close();
+        }
+
+        private Point ClampToScreen(Point p)
+        {
+            var scr = Screen.FromPoint(p).WorkingArea;
+            var x = Math.Clamp(p.X, scr.Left + 4, scr.Right - Width - 4);
+            var y = p.Y;
+            if (y + Height > scr.Bottom) y = p.Y - Height - 4; // 空间不够就向上弹
+            y = Math.Clamp(y, scr.Top + 4, scr.Bottom - Height - 4);
+            return new Point(x, y);
+        }
+
+        private void UpdateRoundedRegion()
+        {
+            using var path = new GraphicsPath();
+            var d = 16;
+            var r = new Rectangle(0, 0, ClientSize.Width, ClientSize.Height);
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            Region = new Region(path);
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ClassStyle |= 0x00020000; // CS_DROPSHADOW
+                return cp;
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            var p = PaperTheme.Current;
+
+            using (var bg = new SolidBrush(p.Paper))
+                g.FillRectangle(bg, ClientRectangle);
+
+            using (var pen = new Pen(p.PaperBorder, 1f))
+            {
+                var d = 16;
+                var r = new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+                using var path = new GraphicsPath();
+                path.AddArc(r.X, r.Y, d, d, 180, 90);
+                path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+                path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+                path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+                g.DrawPath(pen, path);
+            }
+
+            using var font = new Font(PaperTheme.FontName, 9.5f);
+            for (var i = 0; i < Items.Length; i++)
+            {
+                var row = new Rectangle(6, 6 + i * 32, ClientSize.Width - 12, 32);
+                var isCurrent = Items[i].Mode == _current;
+
+                if (_hover == i)
+                {
+                    using var b = new SolidBrush(PaperTheme.HoverTint());
+                    using var path = new GraphicsPath();
+                    var d2 = 14;
+                    path.AddArc(row.X, row.Y, d2, d2, 180, 90);
+                    path.AddArc(row.Right - d2, row.Y, d2, d2, 270, 90);
+                    path.AddArc(row.Right - d2, row.Bottom - d2, d2, d2, 0, 90);
+                    path.AddArc(row.X, row.Bottom - d2, d2, d2, 90, 90);
+                    path.CloseFigure();
+                    g.FillPath(b, path);
+                }
+
+                using (var brush = new SolidBrush(isCurrent ? p.Text : p.WeakText))
+                    g.DrawString(Items[i].Name, font, brush, row.X + 14, row.Y + (row.Height - font.Height) / 2f + 1);
+
+                if (isCurrent)
+                {
+                    using var pen = new Pen(p.Active, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                    var cx = row.Right - 20;
+                    var cy = row.Y + row.Height / 2f;
+                    g.DrawLine(pen, cx - 4, cy, cx - 1, cy + 3.5f);
+                    g.DrawLine(pen, cx - 1, cy + 3.5f, cx + 4.5f, cy - 3.5f);
+                }
+            }
+            font.Dispose();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            var i = e.Y >= 6 && e.Y < 6 + Items.Length * 32 ? (e.Y - 6) / 32 : -1;
+            if (e.X < 6 || e.X >= ClientSize.Width - 6) i = -1;
+            if (i != _hover)
+            {
+                _hover = i;
+                Invalidate();
+            }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_hover != -1)
+            {
+                _hover = -1;
+                Invalidate();
+            }
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left || _hover < 0) return;
+            var picked = Items[_hover];
+            _onPick(picked.Mode);
+            Close();
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Escape) Close();
+        }
     }
 }

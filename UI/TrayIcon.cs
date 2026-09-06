@@ -82,32 +82,44 @@ public sealed class TrayIcon : IDisposable
         var p = PaperTheme.Current;
 
         // 纸面圆盘
-        var face = new RectangleF(3.5f, 3.5f, 25f, 25f);
+        var face = new RectangleF(2.5f, 2.5f, 27f, 27f);
         using (var paper = new SolidBrush(p.Paper))
-        using (var ring = new Pen(p.PaperBorder, 2f))
+        using (var ring = new Pen(p.PaperBorder, 1.6f))
         {
             g.FillEllipse(paper, face);
             g.DrawEllipse(ring, face);
         }
 
-        // 12/3/6/9 时刻度
-        const float cx = 16f, cy = 16f, r1 = 4.2f, r2 = 6.8f;
-        using (var tick = new Pen(p.WeakText, 1.4f))
+        // 12 个刻度：整点加粗，其余细点
+        const float cx = 16f, cy = 16f;
+        for (var i = 0; i < 12; i++)
         {
-            g.DrawLine(tick, cx, cy - r1, cx, cy - r2);
-            g.DrawLine(tick, cx + r1, cy, cx + r2, cy);
-            g.DrawLine(tick, cx, cy + r1, cx, cy + r2);
-            g.DrawLine(tick, cx - r1, cy, cx - r2, cy);
+            var ang = (i * 30 - 90) * Math.PI / 180.0;
+            var cos = (float)Math.Cos(ang);
+            var sin = (float)Math.Sin(ang);
+            var major = i % 3 == 0;
+            using var tick = new Pen(major ? p.Text : p.WeakText, major ? 1.7f : 0.9f)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+            };
+            var r1 = major ? 8.5f : 9.5f;
+            g.DrawLine(tick, cx + cos * r1, cy + sin * r1, cx + cos * 10.6f, cy + sin * 10.6f);
         }
 
-        // 指针（经典 10:10，最耐看的钟面形态）
-        using (var hand = new Pen(p.Active, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-        {
-            g.DrawLine(hand, cx, cy, cx + 5.4f, cy - 3.1f);  // 分针 → 2 点
-            g.DrawLine(hand, cx, cy, cx - 3.1f, cy - 5.4f);  // 时针 → 10 点
-        }
-        using (var dot = new SolidBrush(p.Danger))
-            g.FillEllipse(dot, cx - 1.6f, cy - 1.6f, 3.2f, 3.2f);
+        // 指针（经典 10:10，带配重短尾）
+        using (var hour = new Pen(p.Text, 2.3f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            g.DrawLine(hour, cx + 1.5f, cy + 2.6f, cx - 3.4f, cy - 5.9f); // 时针 → 10 点
+        using (var min = new Pen(p.Text, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            g.DrawLine(min, cx - 2.1f, cy + 1.2f, cx + 6.6f, cy - 3.8f);   // 分针 → 2 点
+        using (var dot = new SolidBrush(p.Active))
+            g.FillEllipse(dot, cx - 1.7f, cy - 1.7f, 3.4f, 3.4f);
+
+        // 右上角提醒小点：一看到它就想起"到点提醒"
+        using (var badge = new SolidBrush(p.Danger))
+            g.FillEllipse(badge, 23.2f, 5.2f, 5.6f, 5.6f);
+        using (var cut = new Pen(p.Paper, 1.6f))
+            g.DrawEllipse(cut, 23.2f, 5.2f, 5.6f, 5.6f);
 
         return bmp;
     }

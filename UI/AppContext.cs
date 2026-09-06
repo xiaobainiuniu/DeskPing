@@ -83,6 +83,7 @@ public sealed class AppContext : ApplicationContext
         _settings.DailyRepeat = _engine.DailyRepeat;
         _settings.SoundOn = _engine.SoundOn;
         _settings.TopMost = _form.Pinned;
+        _settings.LayoutV = 2;
         SettingsStore.Save(_settings);
 
         _tray.Dispose();

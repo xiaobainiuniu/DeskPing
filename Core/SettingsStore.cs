@@ -14,6 +14,7 @@ public sealed class AppSettings
     public bool SoundOn { get; set; } = true;
     public bool AutoStart { get; set; }
     public bool TopMost { get; set; }
+    public int LayoutV { get; set; }
     public int WindowX { get; set; } = -1;
     public int WindowY { get; set; } = -1;
     public int WindowW { get; set; } = -1;

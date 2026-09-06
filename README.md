@@ -18,9 +18,9 @@ Count-up / countdown / target time, tray resident, always-on-top, freely resizab
 | **倒计时 Countdown** | 设定时长（时:分:秒直接输入），归零即提醒 / Type a duration (H:M:S); alert at zero |
 | **目标时刻 Target time** | 设定时刻（今天 / 明天 / 自定义日期），到点提醒；支持**每日重复**（到点后自动顺延一天）/ Pick a moment (today / tomorrow / custom date); supports **daily repeat** |
 
-三种模式下方都有一个**隐形备注**：平时完全看不见，鼠标悬浮才露出底横线；输入文字后默认居中显示，到点提醒时随气泡和提醒画面一起显示（正计时运行中则显示在数字下方）。
+三种模式下方都有一个**隐形备注**：平时完全看不见，鼠标悬浮才露出底横线；输入文字后默认居中显示。开始计时后，备注作为“正在做什么”的提示显示在数字下方；到点提醒时随气泡和提醒画面一起显示。
 
-All three modes share a **hidden note** below: invisible until you hover to reveal its underline; typed text is centered by default, shown in the balloon and on the alert screen when time is up (for count-up, it appears under the digits while running).
+All three modes share a **hidden note** below: invisible until you hover to reveal its underline; typed text is centered by default. Once the timer runs, the note appears under the digits as a reminder of what you're doing; when time is up it shows in the balloon and on the alert screen.
 
 > 开始计时后设置区自动收起，只显示时间，点「重置」恢复。会话内容（备注 / 时长 / 目标）不保存，每次打开都是全新计时。
 >

@@ -20,7 +20,7 @@ public sealed class MainForm : Form
     private const int ButtonRowH = 32;
     private const int Edge = 12;
     private const int InputW = 32, InputH = 22;
-    private const int NoteRowH = 20; // 隐形备注行（三种模式共用）
+    private const int NoteRowH = 22; // 隐形备注行（三种模式共用）
 
     private readonly TimerEngine _engine;
     private readonly AppSettings _settings;
@@ -127,7 +127,7 @@ public sealed class MainForm : Form
             // 左对齐 + 动态等边距：文字在框内居中，光标位置始终正确
             TextAlign = HorizontalAlignment.Left,
             MaxLength = 34,
-            Font = new Font(PaperTheme.FontName, 8.5f),
+            Font = new Font(PaperTheme.FontName, 9f),
             TabStop = true,
             Visible = false,
         };
@@ -157,7 +157,7 @@ public sealed class MainForm : Form
             old.Dispose();
         }
         var oldNote = _txtNote.Font;
-        _txtNote.Font = new Font(PaperTheme.FontName, (float)(8.5 * inputSize));
+        _txtNote.Font = new Font(PaperTheme.FontName, (float)(9 * inputSize));
         oldNote.Dispose();
         SyncInputMargins();
         SyncNoteMargins();
@@ -193,6 +193,7 @@ public sealed class MainForm : Form
                     tb.SelectionStart = tb.Text.Length;
                     tb.SelectionLength = 0;
                 }
+                SetInputMargins(tb); // 随当前文字宽度动态居中（单字符也不偏左）
             };
             // 离开时把输入规整回两位数字（如 3 → 03）
             tb.Leave += (_, _) =>
@@ -474,10 +475,11 @@ public sealed class MainForm : Form
     // 计时一旦开始，隐藏设置区（输入框/备注/模式下拉），只展示核心内容；重置后恢复
     private bool ShowSettings => _engine.State == RunState.Stopped;
     // 自下而上：状态栏 → 按钮行 → 隐形备注行 → 输入行 → 大数字区
+    // 备注底横线距按钮 9px，数字行与备注行相距 7px：底部堆叠保持透气
     private int ButtonsTop => H - StatusH - ButtonRowH - 4;
-    private int NoteRowY => ButtonsTop - 5 - NoteRowH;
-    private int RowY => NoteRowY - 6 - InputH;
-    private int TimeBottom => ShowSettings ? RowY - 14 : ButtonsTop - 8;
+    private int NoteRowY => ButtonsTop - NoteRowH - 11;
+    private int RowY => NoteRowY - InputH - 7;
+    private int TimeBottom => ShowSettings ? RowY - 12 : ButtonsTop - 10;
     private int TargetSX => (W - 236) / 2;
     private int CountSX => (W - 104) / 2;
 
@@ -499,7 +501,7 @@ public sealed class MainForm : Form
     private Rectangle RTomorrow => new(TargetSX + 112, RowY, 46, InputH);
     private Rectangle RPick => new(TargetSX + 162, RowY, 26, InputH);
     private Rectangle RDaily => new(TargetSX + 192, RowY, 44, InputH);
-    private Rectangle NoteRect => new((W - 170) / 2, NoteRowY, 170, NoteRowH);
+    private Rectangle NoteRect => new((W - 200) / 2, NoteRowY, 200, NoteRowH);
 
     private void LayoutInputs()
     {
@@ -526,8 +528,10 @@ public sealed class MainForm : Form
 
     private static void SetInputMargins(TextBox tb)
     {
-        // 用 GDI 度量（与文本框实际渲染一致），且无需控件句柄，DPI 切换时安全
-        var w = TextRenderer.MeasureText("88", tb.Font).Width;
+        if (!tb.IsHandleCreated) return;
+        // 按当前文字宽度计算等边距：数字始终在框内水平居中，光标渲染位置也正确
+        var probe = tb.Text.Length == 0 ? "0" : tb.Text;
+        var w = TextRenderer.MeasureText(probe, tb.Font).Width;
         var margin = Math.Max(0, (InputW - w) / 2);
         SendMessage(tb.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
             (IntPtr)((margin << 16) | (margin & 0xFFFF)));
@@ -763,26 +767,19 @@ public sealed class MainForm : Form
         using var brush = new SolidBrush(color);
         g.DrawString(text, font, brush, (W - tw) / 2f, y);
 
-        if (_engine.Mode == TimerMode.TargetTime && !_alerting && _engine.State == RunState.Running)
+        // 计时中（三种模式一致）：备注提示“正在做什么”，紧跟数字下方，不贴底部
+        if (!_alerting && _engine.State != RunState.Stopped && _txtNote.Text.Length > 0)
         {
             using var weak = new SolidBrush(p.WeakText);
-            var hint = Locale.T("剩余时间", "Remaining");
-            var hw = TextWidth(g, hint, _fSmall);
-            g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
+            var nw = TextWidth(g, _txtNote.Text, _fSmall);
+            var ny = TimeArea.Top + TimeArea.Height / 2f + font.Size * 0.55f + 8;
+            g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, ny);
         }
 
         // 到点：把隐形备注打到提醒画面正中央下方（任何模式）
         if (_alerting && _txtNote.Text.Length > 0)
         {
             using var weak = new SolidBrush(Blend(p.Danger, p.WeakText, 0.45));
-            var nw = TextWidth(g, _txtNote.Text, _fSmall);
-            g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, TimeArea.Bottom - _fSmall.Height - 4);
-        }
-
-        // 正计时运行中：备注就是专注目标，显示在数字下方
-        if (!_alerting && _engine.Mode == TimerMode.CountUp && _engine.State == RunState.Running && _txtNote.Text.Length > 0)
-        {
-            using var weak = new SolidBrush(p.WeakText);
             var nw = TextWidth(g, _txtNote.Text, _fSmall);
             g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
         }
@@ -827,7 +824,7 @@ public sealed class MainForm : Form
         var c = _txtNote.Focused ? p.Active : p.WeakText;
         using var pen = new Pen(c, w);
         var r = NoteRect;
-        g.DrawLine(pen, r.X - 4, r.Bottom + 3, r.Right + 4, r.Bottom + 3);
+        g.DrawLine(pen, r.X - 4, r.Bottom + 2, r.Right + 4, r.Bottom + 2);
     }
 
     private void DrawTargetSettings(Graphics g, Palette p)

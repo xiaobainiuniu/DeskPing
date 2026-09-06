@@ -1,6 +1,6 @@
 # DeskPing
 
-<div align="right">[简体中文](README.md) · **English**</div>
+<div align="right"><a href="README.md">简体中文</a> · <strong>English</strong></div>
 
 <p align="center">
   <strong>A quiet Windows desktop timer that stays out of the way — until it is time to get your attention.</strong>

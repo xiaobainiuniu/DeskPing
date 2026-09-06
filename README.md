@@ -1,6 +1,6 @@
 # DeskPing
 
-<div align="right">**简体中文** · [English](README.en.md)</div>
+<div align="right"><strong>简体中文</strong> · <a href="README.en.md">English</a></div>
 
 <p align="center">
   <strong>一个安静待在桌面角落、到点时认真提醒你的 Windows 计时器。</strong>

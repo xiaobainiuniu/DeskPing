@@ -2,11 +2,20 @@
 
 <div align="right">[简体中文](README.md) · **English**</div>
 
-A tiny Windows tray timer that sits quietly in the corner and loudly wakes you up when time is up.
+<p align="center">
+  <strong>A quiet Windows desktop timer that stays out of the way — until it is time to get your attention.</strong>
+</p>
 
-Count-up / countdown / target time, tray resident, always-on-top, freely resizable, paper-style UI, ultra low power.
+<p align="center">
+  Count-up · Countdown · Target Time · Daily Repeat · System Tray · Bilingual UI
+</p>
 
-![platform](https://img.shields.io/badge/platform-Windows%20x64-555) ![.NET](https://img.shields.io/badge/.NET-10-512bd4)
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Windows%20x64-555" alt="Windows x64" />
+  <img src="https://img.shields.io/badge/.NET-10-512bd4" alt=".NET 10" />
+  <img src="https://img.shields.io/badge/Version-1.8.0-2f81f7" alt="Version 1.8.0" />
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License" />
+</p>
 
 ## Screenshots
 
@@ -18,43 +27,57 @@ Count-up / countdown / target time, tray resident, always-on-top, freely resizab
 
 | Mode | Description |
 | :--- | :--- |
-| **Count-up** | Counts up from zero — for focus sessions, commutes, workouts |
-| **Countdown** | Type a duration (H:M:S); alert at zero |
-| **Target time** | Pick a moment (today / tomorrow / custom date); supports **daily repeat** (auto-schedules to the next day when it fires) |
+| **Count-up** | Counts upward from zero for focus sessions, commutes, workouts, and more |
+| **Countdown** | Enter a duration directly in H:M:S and get alerted at zero |
+| **Target time** | Pick a time today, tomorrow, or on a custom date; supports **daily repeat** |
 
-All three modes share a **note box** below the time: click it and type a line (e.g. "drink water", "20-min nap"); when not editing, the text sits centered and dimmed. Once the timer runs, the note appears under the digits as a reminder of what you're doing; when time is up it shows in the balloon and on the alert screen.
+All three modes include a **note box**. While the timer is running, the note appears beneath the time and is included in the alert when the timer fires.
 
-> Once the timer starts, the settings area hides automatically — only the time shows; press Reset to bring it back. Session contents (note / durations / target) are not saved, so every launch starts fresh.
+> Once a timer starts, the settings area collapses so the running task stays visually clean. Press **Reset** to configure a new session. Session content is not persisted between launches.
 
-### Alert (multi-layer, hard to miss)
+### Alerts
 
-- Window pops up on top, digits bounce, border breathes
-- Taskbar icon flashes + sound (optional) + tray balloon
-- Click "Got it" to stop the animation and reset
+- Window pops up and comes to the front
+- Digits bounce and the border pulses
+- Taskbar icon flashes
+- Optional alert sound
+- Tray balloon notification
+- Press **Got it** to stop the alert and reset
 
 ### Window & tray
 
-- Lives in the tray; double-click toggles, right-click menu to exit
-- Pin button or tray menu to keep it on top
-- Drag any corner to resize; digits scale along
-- First click on an input selects all for overwrite; second click drops the caret where you click
-- **× only hides to tray**, it never quits; app settings auto-save, session contents reset on every launch
+- **System tray resident** — double-click to show/hide, right-click for controls
+- **Always on top** — available from the pin button or tray menu
+- **Resizable** — drag the window edges; timer digits scale with the window
+- **Close to tray** — `×` hides the app instead of exiting
+- **Persistent preferences** — theme, language, sound, pin state, and related settings are saved
 
-### Language
+### Language & themes
 
-The app defaults to Chinese; switch to English any time via the tray menu **Language**. Takes effect instantly and is saved.
+The app defaults to Chinese and can switch to English instantly from the tray menu.
+
+Themes include **Warm Paper / Ink / Forest / Rose**, with dark variants.
 
 ## Power design
 
-- One **1Hz ticker** for the whole timer; idle CPU ≈ 0%, no busy polling
-- **Zero UI refresh** while hidden; the bounce animation runs only during the alert
-- On-demand GDI+ drawing, no persistent render pipeline
+- A single **1Hz ticker** drives timer updates; no busy polling
+- Idle CPU usage stays near 0%
+- No UI refresh while the window is hidden
+- Alert animations run only while an alert is active
+- On-demand GDI+ drawing with no persistent render pipeline
 
 ## Usage
 
-1. Run `DeskPing.exe`; the paper card appears at the bottom-right.
-2. Right-click the tray icon for mode, language, theme (Warm Paper / Ink / Forest / Rose + dark), pin, sound, auto-start, exit.
-3. Settings are stored in `%APPDATA%\DeskPing\settings.json`.
+1. Launch `DeskPing.exe`.
+2. Choose Count-up, Countdown, or Target time.
+3. Optionally add a note and start the timer.
+4. Use the tray menu for language, theme, always-on-top, alert sound, auto-start, and exit.
+
+Settings are stored at:
+
+```text
+%APPDATA%\DeskPing\settings.json
+```
 
 ## Build
 
@@ -66,5 +89,13 @@ dotnet build -c Release
 
 | Script | Output | Description |
 | :--- | :--- | :--- |
-| `publish.cmd` | `publish\DeskPing.exe` | ~300KB, needs the .NET 10 Desktop Runtime installed |
-| `publish-self-contained.cmd` | `publish-self-contained\DeskPing.exe` | Self-contained, no install, ~60MB |
+| `publish.cmd` | `publish\DeskPing.exe` | Smaller build; requires .NET 10 Desktop Runtime on the target PC |
+| `publish-self-contained.cmd` | `publish-self-contained\DeskPing.exe` | Self-contained build that runs without a separate runtime install |
+
+## Tech stack
+
+`C#` · `.NET 10` · `WinForms` · `GDI+` · `Windows Tray API`
+
+## License
+
+[MIT](LICENSE)

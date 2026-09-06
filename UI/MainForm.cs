@@ -20,7 +20,7 @@ public sealed class MainForm : Form
     private const int ButtonRowH = 32;
     private const int Edge = 12;
     private const int InputW = 32, InputH = 22;
-    private const int NoteRowH = 20; // 隐形备注行（仅倒计时）
+    private const int NoteRowH = 20; // 隐形备注行（三种模式共用）
 
     private readonly TimerEngine _engine;
     private readonly AppSettings _settings;
@@ -41,7 +41,7 @@ public sealed class MainForm : Form
     private string _statusOverride = "";
     private Zone _hover = Zone.None, _pressed = Zone.None;
     private bool _syncingInputs;
-    private bool _clickWasFocused, _enterOnClick;
+    private bool _clickWasFocused;
     private bool _noteHover;
     private int _fontFitW, _fontFitH;
 
@@ -118,12 +118,13 @@ public sealed class MainForm : Form
         };
     }
 
-    /// <summary>倒计时隐形备注框：无边框同底色，空内容时不可见，悬浮时才露底横线。</summary>
+    /// <summary>隐形备注框（三种模式共用）：无边框同底色，空内容时不可见，悬浮时才露底横线。</summary>
     private static TextBox MakeNoteInput()
     {
         return new TextBox
         {
             BorderStyle = BorderStyle.None,
+            // 左对齐 + 动态等边距：文字在框内居中，光标位置始终正确
             TextAlign = HorizontalAlignment.Left,
             MaxLength = 34,
             Font = new Font(PaperTheme.FontName, 8.5f),
@@ -159,6 +160,7 @@ public sealed class MainForm : Form
         _txtNote.Font = new Font(PaperTheme.FontName, (float)(8.5 * inputSize));
         oldNote.Dispose();
         SyncInputMargins();
+        SyncNoteMargins();
 
         _fontFitW = W;
         _fontFitH = H;
@@ -175,22 +177,14 @@ public sealed class MainForm : Form
         foreach (var tb in _inputs)
         {
             tb.KeyPress += (_, e) => e.Handled = !char.IsDigit(e.KeyChar) && e.KeyChar != '\b';
-            // 第一次点击：系统原生已全选（MouseDown 被吞掉不触发），保留全选；再点击：光标落到末尾闪烁
+            // 第一次点击：全选（直接输入即替换）；再次点击：不干预，光标落在点击处
             tb.MouseDown += (_, _) => _clickWasFocused = tb.Focused;
-            tb.Enter += (_, _) => { _enterOnClick = true; tb.SelectAll(); Invalidate(); };
             tb.MouseUp += (_, e) =>
             {
-                if (e.Button != MouseButtons.Left) return;
-                var first = !_clickWasFocused || _enterOnClick;
+                if (e.Button == MouseButtons.Left && !_clickWasFocused) tb.SelectAll();
                 _clickWasFocused = false;
-                _enterOnClick = false;
-                if (first) tb.SelectAll();
-                else
-                {
-                    tb.SelectionStart = tb.Text.Length;
-                    tb.SelectionLength = 0;
-                }
             };
+            tb.Enter += (_, _) => tb.SelectAll(); // Tab 进入同样全选
             // 每敲一个数字，光标都停在最后一位后面（可继续输入或删除）
             tb.TextChanged += (_, _) =>
             {
@@ -209,35 +203,26 @@ public sealed class MainForm : Form
             Controls.Add(tb);
         }
 
-        // 隐形备注：悬浮 / 聚焦 / 有内容时才露底横线，其余时间完全隐身
+        // 隐形备注：空时不露痕迹，悬浮才现底横线；文字随边距动态居中
+        _txtNote.TextChanged += (_, _) => { SyncNoteMargins(); Invalidate(); };
         _txtNote.MouseEnter += (_, _) => { _noteHover = true; Invalidate(); };
         _txtNote.MouseLeave += (_, _) => { _noteHover = false; Invalidate(); };
-        _txtNote.Enter += (_, _) => Invalidate();
-        _txtNote.Leave += (_, _) => Invalidate();
+        _txtNote.Enter += (_, _) => { _txtNote.ForeColor = PaperTheme.Current.Text; Invalidate(); };
+        _txtNote.Leave += (_, _) => { _txtNote.ForeColor = PaperTheme.Current.WeakText; Invalidate(); };
         Controls.Add(_txtNote);
     }
 
     private void ApplySettingsFromStore()
     {
         _engine.SoundOn = _settings.SoundOn;
-        _engine.DailyRepeat = _settings.DailyRepeat;
-        _txtNote.Text = _settings.Note;
 
+        // 会话内容（备注 / 时长 / 目标）不保存：每次打开都是全新的一次计时
         _engine.SetMode(_settings.Mode switch
         {
             "countup" => TimerMode.CountUp,
             "target" => TimerMode.TargetTime,
             _ => TimerMode.CountDown,
         });
-
-        _engine.SetCountdown(TimeSpan.FromSeconds(Math.Clamp(_settings.CountdownSeconds, 1, 99 * 3600 + 59 * 60 + 59)));
-
-        if (TimeSpan.TryParse(_settings.TargetTime, out var tt))
-        {
-            _targetDate = DateTime.Today;
-            _targetDateIsCustom = false;
-            _engine.SetTarget(_targetDate.Add(tt), _settings.DailyRepeat);
-        }
     }
 
     // ---------- 对外操作（托盘菜单等调用） ----------
@@ -368,8 +353,7 @@ public sealed class MainForm : Form
     private void OnEngineStateChanged()
     {
         _statusOverride = "";
-        UpdateInputsFromEngine();
-        if (Visible) Invalidate();
+        UpdateModeUi();
     }
 
     // ---------- 提醒动画 ----------
@@ -430,7 +414,7 @@ public sealed class MainForm : Form
         if (!int.TryParse(_txtTH.Text, out var h) || !int.TryParse(_txtTM.Text, out var m)) return;
         if (h > 23 || m > 59) return;
         var target = _targetDate.Date.AddHours(h).AddMinutes(m);
-        if (target != _engine.Target || _settings.DailyRepeat != _engine.DailyRepeat)
+        if (target != _engine.Target)
             _engine.SetTarget(target, _engine.DailyRepeat);
     }
 
@@ -468,9 +452,16 @@ public sealed class MainForm : Form
     private void UpdateModeUi()
     {
         var mode = _engine.Mode;
-        _txtH.Visible = _txtM.Visible = _txtS.Visible = mode == TimerMode.CountDown;
-        _txtTH.Visible = _txtTM.Visible = mode == TimerMode.TargetTime;
-        _txtNote.Visible = mode == TimerMode.CountDown;
+        var show = ShowSettings;
+        _txtH.Visible = _txtM.Visible = _txtS.Visible = mode == TimerMode.CountDown && show;
+        _txtTH.Visible = _txtTM.Visible = mode == TimerMode.TargetTime && show;
+        _txtNote.Visible = show; // 备注框三种模式都有
+        if (!show)
+        {
+            // 开始计时：收起设置区与弹层，只留核心内容
+            CloseModePopup();
+            ActiveControl = null;
+        }
         LayoutInputs();
         UpdateInputsFromEngine();
         Invalidate();
@@ -480,11 +471,13 @@ public sealed class MainForm : Form
 
     private int W => ClientSize.Width;
     private int H => ClientSize.Height;
-    // 自下而上：状态栏 → 按钮行 → 隐形备注行（倒计时）→ 输入行 → 大数字区
+    // 计时一旦开始，隐藏设置区（输入框/备注/模式下拉），只展示核心内容；重置后恢复
+    private bool ShowSettings => _engine.State == RunState.Stopped;
+    // 自下而上：状态栏 → 按钮行 → 隐形备注行 → 输入行 → 大数字区
     private int ButtonsTop => H - StatusH - ButtonRowH - 4;
     private int NoteRowY => ButtonsTop - 5 - NoteRowH;
     private int RowY => NoteRowY - 6 - InputH;
-    private int TimeBottom => RowY - 14;
+    private int TimeBottom => ShowSettings ? RowY - 14 : ButtonsTop - 8;
     private int TargetSX => (W - 236) / 2;
     private int CountSX => (W - 104) / 2;
 
@@ -511,6 +504,7 @@ public sealed class MainForm : Form
     private void LayoutInputs()
     {
         _txtNote.Bounds = NoteRect;
+        SyncNoteMargins();
         if (_engine.Mode == TimerMode.CountDown)
         {
             _txtH.Bounds = RCountH;
@@ -536,6 +530,16 @@ public sealed class MainForm : Form
         var w = TextRenderer.MeasureText("88", tb.Font).Width;
         var margin = Math.Max(0, (InputW - w) / 2);
         SendMessage(tb.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
+            (IntPtr)((margin << 16) | (margin & 0xFFFF)));
+    }
+
+    /// <summary>备注文字默认居中：左对齐 + 随文字宽度动态计算的等边距，光标位置始终正确。</summary>
+    private void SyncNoteMargins()
+    {
+        if (!_txtNote.IsHandleCreated) return;
+        var w = TextRenderer.MeasureText(_txtNote.Text, _txtNote.Font).Width;
+        var margin = Math.Max(0, (NoteRect.Width - w) / 2);
+        SendMessage(_txtNote.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
             (IntPtr)((margin << 16) | (margin & 0xFFFF)));
     }
 
@@ -573,7 +577,7 @@ public sealed class MainForm : Form
             tb.ForeColor = p.Text;
         }
         _txtNote.BackColor = p.Paper;
-        _txtNote.ForeColor = p.Text;
+        _txtNote.ForeColor = _txtNote.Focused ? p.Text : p.WeakText; // 未聚焦时备注弱化显示
         ApplyFormIcon();
         UpdateRoundedRegion();
         Invalidate();
@@ -652,7 +656,7 @@ public sealed class MainForm : Form
 
     private void DrawTitleBar(Graphics g, Palette p)
     {
-        DrawModeButton(g, p);
+        if (ShowSettings) DrawModeButton(g, p); // 计时中不显示模式下拉
         DrawPinButton(g, p);
         DrawTitleButton(g, p, MinRect, "−", _hover == Zone.Minimize, _pressed == Zone.Minimize);
         DrawTitleButton(g, p, CloseRect, "✕", _hover == Zone.Close, _pressed == Zone.Close);
@@ -767,17 +771,26 @@ public sealed class MainForm : Form
             g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
         }
 
-        // 倒计时到点：把隐形备注打到提醒画面正中央下方
-        if (_alerting && _engine.Mode == TimerMode.CountDown && _txtNote.Text.Length > 0)
+        // 到点：把隐形备注打到提醒画面正中央下方（任何模式）
+        if (_alerting && _txtNote.Text.Length > 0)
         {
             using var weak = new SolidBrush(Blend(p.Danger, p.WeakText, 0.45));
             var nw = TextWidth(g, _txtNote.Text, _fSmall);
             g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, TimeArea.Bottom - _fSmall.Height - 4);
         }
+
+        // 正计时运行中：备注就是专注目标，显示在数字下方
+        if (!_alerting && _engine.Mode == TimerMode.CountUp && _engine.State == RunState.Running && _txtNote.Text.Length > 0)
+        {
+            using var weak = new SolidBrush(p.WeakText);
+            var nw = TextWidth(g, _txtNote.Text, _fSmall);
+            g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
+        }
     }
 
     private void DrawSettings(Graphics g, Palette p)
     {
+        if (!ShowSettings) return; // 计时中：设置区整体隐藏，只留核心内容
         switch (_engine.Mode)
         {
             case TimerMode.CountDown:
@@ -795,6 +808,7 @@ public sealed class MainForm : Form
                 }
                 break;
         }
+        DrawNoteUnderline(g, p);
     }
 
     private void DrawCountdownSettings(Graphics g, Palette p)
@@ -802,23 +816,15 @@ public sealed class MainForm : Form
         using var weak = new SolidBrush(p.WeakText);
         g.DrawString(":", _fSmall, weak, CountSX + 33, RowY + (InputH - _fSmall.Height) / 2f - 2);
         g.DrawString(":", _fSmall, weak, CountSX + 69, RowY + (InputH - _fSmall.Height) / 2f - 2);
-
-        DrawInputUnderline(g, p, _txtH);
-        DrawInputUnderline(g, p, _txtM);
-        DrawInputUnderline(g, p, _txtS);
-
-        DrawNoteUnderline(g, p);
     }
 
-    /// <summary>隐形备注底横线：空内容且未悬浮未聚焦时完全不画。</summary>
+    /// <summary>隐形备注底横线：只有悬浮 / 聚焦时才露面，其余时间完全隐身。</summary>
     private void DrawNoteUnderline(Graphics g, Palette p)
     {
-        var focused = _txtNote.Focused;
-        var hasText = _txtNote.Text.Length > 0;
-        if (!focused && !_noteHover && !hasText) return;
+        if (!_noteHover && !_txtNote.Focused) return;
 
-        var w = focused ? 2f : _noteHover ? 1.5f : 1f;
-        var c = focused ? p.Active : _noteHover ? p.WeakText : PaperTheme.WithAlpha(p.WeakText, 110);
+        var w = _txtNote.Focused ? 2f : 1.5f;
+        var c = _txtNote.Focused ? p.Active : p.WeakText;
         using var pen = new Pen(c, w);
         var r = NoteRect;
         g.DrawLine(pen, r.X - 4, r.Bottom + 3, r.Right + 4, r.Bottom + 3);
@@ -828,9 +834,6 @@ public sealed class MainForm : Form
     {
         using var weak = new SolidBrush(p.WeakText);
         g.DrawString(":", _fSmall, weak, TargetSX + 33, RowY + (InputH - _fSmall.Height) / 2f - 2);
-
-        DrawInputUnderline(g, p, _txtTH);
-        DrawInputUnderline(g, p, _txtTM);
 
         var todaySel = !_targetDateIsCustom && _targetDate == DateTime.Today;
         var tomorrowSel = !_targetDateIsCustom && _targetDate == DateTime.Today.AddDays(1);
@@ -858,12 +861,6 @@ public sealed class MainForm : Form
         }
         using (var brush = new SolidBrush(_engine.DailyRepeat ? p.Text : p.WeakText))
             g.DrawString(Locale.T("每日", "Daily"), _fSmall, brush, RDaily.X + 18, RowY + (InputH - _fSmall.Height) / 2f + 2);
-    }
-
-    private void DrawInputUnderline(Graphics g, Palette p, TextBox tb)
-    {
-        using var pen = new Pen(tb.Focused ? p.Active : p.WeakText, tb.Focused ? 2f : 1f);
-        g.DrawLine(pen, tb.Left - 4, tb.Bottom + 3, tb.Right + 4, tb.Bottom + 3);
     }
 
     private void DrawChipButton(Graphics g, Palette p, Rectangle r, string text, bool hover, bool pressed, bool selected)
@@ -1016,12 +1013,12 @@ public sealed class MainForm : Form
         if (CloseRect.Contains(pt)) return Zone.Close;
         if (MinRect.Contains(pt)) return Zone.Minimize;
         if (PinRect.Contains(pt)) return Zone.Pin;
-        if (ModeBtnRect.Contains(pt)) return Zone.Mode;
+        if (ShowSettings && ModeBtnRect.Contains(pt)) return Zone.Mode;
 
         if (MainBtnRect.Contains(pt)) return Zone.Main;
         if (!_alerting && ResetBtnRect.Contains(pt)) return Zone.Reset;
 
-        if (_engine.Mode == TimerMode.TargetTime)
+        if (_engine.Mode == TimerMode.TargetTime && ShowSettings)
         {
             if (RToday.Contains(pt)) return Zone.Today;
             if (RTomorrow.Contains(pt)) return Zone.Tomorrow;
@@ -1059,6 +1056,7 @@ public sealed class MainForm : Form
     {
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
+        ActiveControl = null; // 点击输入框以外的区域时，收起输入框光标
         var z = HitTest(e.Location);
         if (z == Zone.None)
         {
@@ -1123,9 +1121,7 @@ public sealed class MainForm : Form
                 PickCustomDate();
                 break;
             case Zone.Daily:
-                var next = !_engine.DailyRepeat;
-                _settings.DailyRepeat = next;
-                _engine.SetTarget(_engine.Target, next);
+                _engine.SetTarget(_engine.Target, !_engine.DailyRepeat);
                 Invalidate();
                 break;
         }

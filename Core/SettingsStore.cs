@@ -9,13 +9,9 @@ public sealed class AppSettings
     public bool Dark { get; set; }
     public string Lang { get; set; } = "zh";
     public string Mode { get; set; } = "countdown";
-    public int CountdownSeconds { get; set; } = 25 * 60;
-    public string TargetTime { get; set; } = "18:00";
-    public bool DailyRepeat { get; set; }
     public bool SoundOn { get; set; } = true;
     public bool AutoStart { get; set; }
     public bool TopMost { get; set; }
-    public string Note { get; set; } = "";
     public int LayoutV { get; set; }
     public int WindowX { get; set; } = -1;
     public int WindowY { get; set; } = -1;

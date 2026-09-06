@@ -15,8 +15,16 @@ Count-up / countdown / target time, tray resident, always-on-top, freely resizab
 | 模式 Mode | 说明 Description |
 | :--- | :--- |
 | **正计时 Count-up** | 从零开始累计，适合专注时长、通勤、健身等 / Counts up from zero, for focus sessions, commutes, workouts |
-| **倒计时 Countdown** | 设定时长（时:分:秒直接输入），归零即提醒；下方有**隐形备注**（悬浮输入，提醒时随气泡显示）/ Type a duration (H:M:S); alert at zero; a **hidden note** below (hover to type, shown in the balloon on alert) |
+| **倒计时 Countdown** | 设定时长（时:分:秒直接输入），归零即提醒 / Type a duration (H:M:S); alert at zero |
 | **目标时刻 Target time** | 设定时刻（今天 / 明天 / 自定义日期），到点提醒；支持**每日重复**（到点后自动顺延一天）/ Pick a moment (today / tomorrow / custom date); supports **daily repeat** |
+
+三种模式下方都有一个**隐形备注**：平时完全看不见，鼠标悬浮才露出底横线；输入文字后默认居中显示，到点提醒时随气泡和提醒画面一起显示（正计时运行中则显示在数字下方）。
+
+All three modes share a **hidden note** below: invisible until you hover to reveal its underline; typed text is centered by default, shown in the balloon and on the alert screen when time is up (for count-up, it appears under the digits while running).
+
+> 开始计时后设置区自动收起，只显示时间，点「重置」恢复。会话内容（备注 / 时长 / 目标）不保存，每次打开都是全新计时。
+>
+> Once the timer starts, the settings area hides automatically — only the time shows; press Reset to bring it back. Session contents (note / durations / target) are not saved, so every launch starts fresh.
 
 ### 到点提醒 Alert (multi-layer, hard to miss)
 
@@ -29,8 +37,8 @@ Count-up / countdown / target time, tray resident, always-on-top, freely resizab
 - **托盘常驻**：双击图标显示 / 隐藏，右键菜单退出 — Lives in the tray; double-click toggles, right-click menu to exit
 - **置顶**：标题栏图钉按钮或托盘菜单 — Pin button or tray menu to keep it on top
 - **自由缩放**：拖动窗口边角即可放大缩小，数字随窗口自动缩放 — Drag any corner to resize; digits scale along
-- **点击输入框自动全选**，直接输入新数字覆盖；再点一次光标落到末尾 — First click selects all for overwrite; second click drops the caret at the end
-- **× 只是藏进托盘**，不退出；设置自动保存，重启恢复 — × only hides to tray; settings auto-save and restore
+- **点击输入框自动全选**，直接输入新数字覆盖；再点一次光标落在点击处 — First click selects all for overwrite; second click drops the caret where you click
+- **× 只是藏进托盘**，不退出；应用设置自动保存，会话内容（备注/时长）每次打开重置 — × only hides to tray; app settings auto-save, session contents (note / durations) reset on every launch
 
 ### 语言 Language
 

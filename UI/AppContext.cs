@@ -19,10 +19,12 @@ public sealed class AppContext : ApplicationContext
     {
         _settings = SettingsStore.Load();
         PaperTheme.Apply(_settings.ThemeId, _settings.Dark);
+        Locale.Set(_settings.Lang == "en");
 
         _engine = new TimerEngine();
         _form = new MainForm(_engine, _settings, () =>
-            _tray!.ShowBalloon("还在右下角托盘里安静待命，右键托盘图标可退出。"));
+            _tray!.ShowBalloon(Locale.T("还在右下角托盘里安静待命，右键托盘图标可退出。",
+                "Still here in the tray — right-click the tray icon to exit.")));
         _tray = new TrayIcon(
             _settings,
             toggleForm: () => _form.ToggleVisible(),
@@ -33,6 +35,12 @@ public sealed class AppContext : ApplicationContext
             setAutoStart: SetAutoStart,
             getTopMost: () => _form.Pinned,
             setTopMost: v => _form.SetPinned(v),
+            setLang: english =>
+            {
+                _settings.Lang = english ? "en" : "zh";
+                Locale.Set(english);
+                _form.RefreshTexts();
+            },
             exit: ExitApp);
 
         _engine.Alarm += OnAlarm;
@@ -45,9 +53,11 @@ public sealed class AppContext : ApplicationContext
     {
         var text = _engine.Mode switch
         {
-            TimerMode.CountDown => "倒计时结束，回来看看。",
-            TimerMode.TargetTime => _engine.DailyRepeat ? "目标时刻到，明日此时再见。" : "目标时刻到了！",
-            _ => "时间到！",
+            TimerMode.CountDown => Locale.T("倒计时结束，回来看看。", "Countdown finished — time for a break."),
+            TimerMode.TargetTime => _engine.DailyRepeat
+                ? Locale.T("目标时刻到，明日此时再见。", "Target time reached — see you tomorrow.")
+                : Locale.T("目标时刻到了！", "Target time reached!"),
+            _ => Locale.T("时间到！", "Time's up!"),
         };
         _tray.ShowBalloon(text);
         _form.TriggerAlert();
@@ -83,6 +93,7 @@ public sealed class AppContext : ApplicationContext
         _settings.DailyRepeat = _engine.DailyRepeat;
         _settings.SoundOn = _engine.SoundOn;
         _settings.TopMost = _form.Pinned;
+        _settings.Lang = Locale.IsEnglish ? "en" : "zh";
         _settings.LayoutV = 2;
         SettingsStore.Save(_settings);
 

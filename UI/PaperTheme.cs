@@ -26,6 +26,7 @@ public static class PaperTheme
 
     public static readonly string[] All = { Warm, Ink, Forest, Rose };
     public static readonly string[] Names = { "暖纸", "墨", "林", "霞" };
+    public static readonly string[] NamesEn = { "Warm Paper", "Ink", "Forest", "Rose" };
 
     // 字体与形状常量（逻辑像素，随 DPI 自动缩放）。
     public const string FontName = "Microsoft YaHei UI";

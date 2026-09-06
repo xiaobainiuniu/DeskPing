@@ -235,6 +235,13 @@ public sealed class MainForm : Form
 
     public void SetSound(bool on) => _engine.SoundOn = on;
 
+    /// <summary>语言切换后刷新文案（所有文案绘制时实时取值，只需重绘）。</summary>
+    public void RefreshTexts()
+    {
+        CloseModePopup();
+        Invalidate();
+    }
+
     public void SetPinned(bool pinned)
     {
         _pinned = pinned;
@@ -465,9 +472,9 @@ public sealed class MainForm : Form
     private Rectangle RTargetM => new(SettingsSX + 40, RowY, InputW, InputH);
     private Rectangle RPreset(int i) => new(SettingsSX + 118 + i * (42 + Gap), RowY, 42, InputH);
     private Rectangle RToday => new(SettingsSX + 78, RowY, 40, InputH);
-    private Rectangle RTomorrow => new(SettingsSX + 124, RowY, 40, InputH);
-    private Rectangle RPick => new(SettingsSX + 170, RowY, 32, InputH);
-    private Rectangle RDaily => new(SettingsSX + 208, RowY, 48, InputH);
+    private Rectangle RTomorrow => new(SettingsSX + 124, RowY, 48, InputH);
+    private Rectangle RPick => new(SettingsSX + 178, RowY, 32, InputH);
+    private Rectangle RDaily => new(SettingsSX + 216, RowY, 48, InputH);
 
     private void LayoutInputs()
     {
@@ -724,7 +731,7 @@ public sealed class MainForm : Form
         if (_engine.Mode == TimerMode.TargetTime && !_alerting && _engine.State == RunState.Running)
         {
             using var weak = new SolidBrush(p.WeakText);
-            var hint = "剩余时间";
+            var hint = Locale.T("剩余时间", "Remaining");
             var hw = TextWidth(g, hint, _fSmall);
             g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
         }
@@ -743,7 +750,7 @@ public sealed class MainForm : Form
             default:
                 using (var weak = new SolidBrush(p.WeakText))
                 {
-                    var hint = "从零开始累计 · 专注当下";
+                    var hint = Locale.T("从零开始累计 · 专注当下", "Counting up from zero · stay focused");
                     var w = TextWidth(g, hint, _fSmall);
                     g.DrawString(hint, _fSmall, weak, (W - w) / 2f, SettingsTop + (SettingsRowH - _fSmall.Height) / 2f);
                 }
@@ -761,7 +768,7 @@ public sealed class MainForm : Form
         DrawInputUnderline(g, p, _txtM);
         DrawInputUnderline(g, p, _txtS);
 
-        var presets = new[] { "+5分", "+15分", "+30分" };
+        var presets = new[] { Locale.T("+5分", "+5m"), Locale.T("+15分", "+15m"), Locale.T("+30分", "+30m") };
         for (var i = 0; i < 3; i++)
         {
             var zone = i == 0 ? Zone.P1 : i == 1 ? Zone.P2 : Zone.P3;
@@ -779,8 +786,8 @@ public sealed class MainForm : Form
 
         var todaySel = !_targetDateIsCustom && _targetDate == DateTime.Today;
         var tomorrowSel = !_targetDateIsCustom && _targetDate == DateTime.Today.AddDays(1);
-        DrawChipButton(g, p, RToday, "今天", _hover == Zone.Today, _pressed == Zone.Today, todaySel);
-        DrawChipButton(g, p, RTomorrow, "明天", _hover == Zone.Tomorrow, _pressed == Zone.Tomorrow, tomorrowSel);
+        DrawChipButton(g, p, RToday, Locale.T("今天", "Today"), _hover == Zone.Today, _pressed == Zone.Today, todaySel);
+        DrawChipButton(g, p, RTomorrow, Locale.T("明天", "Tomorrow"), _hover == Zone.Tomorrow, _pressed == Zone.Tomorrow, tomorrowSel);
         DrawChipButton(g, p, RPick, "…", _hover == Zone.Pick, _pressed == Zone.Pick, _targetDateIsCustom);
 
         var checkRect = new Rectangle(RDaily.X + 2, RowY + 5, 14, 14);
@@ -802,7 +809,7 @@ public sealed class MainForm : Form
             }
         }
         using (var brush = new SolidBrush(_engine.DailyRepeat ? p.Text : p.WeakText))
-            g.DrawString("每日", _fSmall, brush, RDaily.X + 18, RowY + (InputH - _fSmall.Height) / 2f + 2);
+            g.DrawString(Locale.T("每日", "Daily"), _fSmall, brush, RDaily.X + 18, RowY + (InputH - _fSmall.Height) / 2f + 2);
     }
 
     private void DrawInputUnderline(Graphics g, Palette p, TextBox tb)
@@ -841,9 +848,10 @@ public sealed class MainForm : Form
     private void DrawButtons(Graphics g, Palette p)
     {
         if (!_alerting)
-            DrawOutlineButton(g, p, ResetBtnRect, "重置", _hover == Zone.Reset, _pressed == Zone.Reset);
+            DrawOutlineButton(g, p, ResetBtnRect, Locale.T("重置", "Reset"), _hover == Zone.Reset, _pressed == Zone.Reset);
 
-        var mainText = _alerting ? "知道了" : _engine.State == RunState.Running ? "暂停" : "开始";
+        var mainText = _alerting ? Locale.T("知道了", "Got it")
+            : _engine.State == RunState.Running ? Locale.T("暂停", "Pause") : Locale.T("开始", "Start");
         var mainColor = _alerting ? p.Danger : p.Active;
         DrawFilledButton(g, p, MainBtnRect, mainText, _hover == Zone.Main, _pressed == Zone.Main, mainColor);
     }
@@ -895,14 +903,14 @@ public sealed class MainForm : Form
 
     private static string ModeName(TimerMode m) => m switch
     {
-        TimerMode.CountUp => "正计时",
-        TimerMode.CountDown => "倒计时",
-        _ => "目标时刻",
+        TimerMode.CountUp => Locale.T("正计时", "Count Up"),
+        TimerMode.CountDown => Locale.T("倒计时", "Countdown"),
+        _ => Locale.T("目标时刻", "Target Time"),
     };
 
     private string DisplayText()
     {
-        if (_alerting) return "时间到！";
+        if (_alerting) return Locale.T("时间到！", "Time's up!");
         return _engine.Mode switch
         {
             TimerMode.CountUp => Fmt(_engine.Elapsed),
@@ -923,21 +931,21 @@ public sealed class MainForm : Form
 
     private string StatusText()
     {
-        if (_alerting) return "点「知道了」停止提醒";
+        if (_alerting) return Locale.T("点「知道了」停止提醒", "Click \"Got it\" to stop the alert");
         if (_statusOverride != "") return _statusOverride;
         return (_engine.Mode, _engine.State) switch
         {
-            (TimerMode.CountUp, RunState.Stopped) => "点开始 · 累计专注时长",
-            (TimerMode.CountUp, RunState.Running) => "正计时中 · 享受当下",
-            (TimerMode.CountUp, RunState.Paused) => "已暂停 · 点开始继续",
-            (TimerMode.CountDown, RunState.Stopped) => "点开始 · 结束即提醒",
-            (TimerMode.CountDown, RunState.Running) => "倒计时中",
-            (TimerMode.CountDown, RunState.Paused) => "已暂停 · 点开始继续",
-            (TimerMode.CountDown, RunState.Alerted) => "倒计时结束！",
-            (TimerMode.TargetTime, RunState.Stopped) => $"目标：{DescribeTarget()}",
-            (TimerMode.TargetTime, RunState.Running) => $"将在 {DescribeTarget()} 提醒",
-            (TimerMode.TargetTime, RunState.Paused) => "已暂停 · 点开始继续",
-            (TimerMode.TargetTime, RunState.Alerted) => "目标时刻已到！",
+            (TimerMode.CountUp, RunState.Stopped) => Locale.T("点开始 · 累计专注时长", "Press Start · track focus time"),
+            (TimerMode.CountUp, RunState.Running) => Locale.T("正计时中 · 享受当下", "Counting up · enjoy the moment"),
+            (TimerMode.CountUp, RunState.Paused) => Locale.T("已暂停 · 点开始继续", "Paused · press Start to resume"),
+            (TimerMode.CountDown, RunState.Stopped) => Locale.T("点开始 · 结束即提醒", "Press Start · alert at zero"),
+            (TimerMode.CountDown, RunState.Running) => Locale.T("倒计时中", "Counting down"),
+            (TimerMode.CountDown, RunState.Paused) => Locale.T("已暂停 · 点开始继续", "Paused · press Start to resume"),
+            (TimerMode.CountDown, RunState.Alerted) => Locale.T("倒计时结束！", "Countdown finished!"),
+            (TimerMode.TargetTime, RunState.Stopped) => $"{Locale.T("目标：", "Target: ")}{DescribeTarget()}",
+            (TimerMode.TargetTime, RunState.Running) => $"{Locale.T("将在", "Alert at")} {DescribeTarget()}",
+            (TimerMode.TargetTime, RunState.Paused) => Locale.T("已暂停 · 点开始继续", "Paused · press Start to resume"),
+            (TimerMode.TargetTime, RunState.Alerted) => Locale.T("目标时刻已到！", "Target time reached!"),
             _ => "",
         };
     }
@@ -945,10 +953,10 @@ public sealed class MainForm : Form
     private string DescribeTarget()
     {
         var t = _engine.Target;
-        var day = t.Date == DateTime.Today ? "今天"
-            : t.Date == DateTime.Today.AddDays(1) ? "明天"
-            : t.ToString("M月d日");
-        return $"{day} {t:HH:mm}" + (_engine.DailyRepeat ? " · 每日" : "");
+        var day = t.Date == DateTime.Today ? Locale.T("今天", "today")
+            : t.Date == DateTime.Today.AddDays(1) ? Locale.T("明天", "tomorrow")
+            : t.ToString(Locale.IsEnglish ? "MMM d" : "M月d日");
+        return $"{day} {t:HH:mm}" + (_engine.DailyRepeat ? Locale.T(" · 每日", " · daily") : "");
     }
 
     // ---------- 鼠标交互 ----------
@@ -1059,7 +1067,7 @@ public sealed class MainForm : Form
             case Zone.Reset:
                 StopAlert();
                 _engine.Reset();
-                FlashStatus("已重置");
+                FlashStatus(Locale.T("已重置", "Reset done"));
                 Invalidate();
                 break;
             case Zone.P1:
@@ -1110,7 +1118,7 @@ public sealed class MainForm : Form
     {
         using var picker = new Form
         {
-            Text = "选择日期",
+            Text = Locale.T("选择日期", "Pick a date"),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MinimizeBox = false,
@@ -1125,8 +1133,8 @@ public sealed class MainForm : Form
             Location = new Point(16, 16),
             Width = 208,
         };
-        var ok = new Button { Text = "确定", DialogResult = DialogResult.OK, Location = new Point(56, 52), Size = new Size(84, 28) };
-        var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(148, 52), Size = new Size(76, 28) };
+        var ok = new Button { Text = Locale.T("确定", "OK"), DialogResult = DialogResult.OK, Location = new Point(56, 52), Size = new Size(84, 28) };
+        var cancel = new Button { Text = Locale.T("取消", "Cancel"), DialogResult = DialogResult.Cancel, Location = new Point(148, 52), Size = new Size(76, 28) };
         picker.Controls.Add(dtp);
         picker.Controls.Add(ok);
         picker.Controls.Add(cancel);
@@ -1262,11 +1270,18 @@ public sealed class MainForm : Form
     /// <summary>模式选择弹出层：纸张风小菜单，点外面 / 按 Esc / 选中后自动关闭。</summary>
     private sealed class ModePopup : Form
     {
-        private static readonly (TimerMode Mode, string Name)[] Items =
+        private static readonly TimerMode[] Items =
         {
-            (TimerMode.CountUp, "正计时"),
-            (TimerMode.CountDown, "倒计时"),
-            (TimerMode.TargetTime, "目标时刻"),
+            TimerMode.CountUp,
+            TimerMode.CountDown,
+            TimerMode.TargetTime,
+        };
+
+        private static string NameOf(TimerMode m) => m switch
+        {
+            TimerMode.CountUp => Locale.T("正计时", "Count Up"),
+            TimerMode.CountDown => Locale.T("倒计时", "Countdown"),
+            _ => Locale.T("目标时刻", "Target Time"),
         };
 
         private readonly TimerMode _current;
@@ -1349,7 +1364,7 @@ public sealed class MainForm : Form
             for (var i = 0; i < Items.Length; i++)
             {
                 var row = new Rectangle(6, 6 + i * 32, ClientSize.Width - 12, 32);
-                var isCurrent = Items[i].Mode == _current;
+                var isCurrent = Items[i] == _current;
 
                 if (_hover == i)
                 {
@@ -1365,7 +1380,7 @@ public sealed class MainForm : Form
                 }
 
                 using (var brush = new SolidBrush(isCurrent ? p.Text : p.WeakText))
-                    g.DrawString(Items[i].Name, font, brush, row.X + 14, row.Y + (row.Height - font.Height) / 2f + 1);
+                    g.DrawString(NameOf(Items[i]), font, brush, row.X + 14, row.Y + (row.Height - font.Height) / 2f + 1);
 
                 if (isCurrent)
                 {
@@ -1405,8 +1420,7 @@ public sealed class MainForm : Form
         {
             base.OnMouseUp(e);
             if (e.Button != MouseButtons.Left || _hover < 0) return;
-            var picked = Items[_hover];
-            _onPick(picked.Mode);
+            _onPick(Items[_hover]);
             Close();
         }
 

@@ -20,15 +20,16 @@ public sealed class TrayIcon : IDisposable
     private readonly Action<bool> _setAutoStart;
     private readonly Func<bool> _getTopMost;
     private readonly Action<bool> _setTopMost;
+    private readonly Action<bool> _setLang;
     private readonly Action _exit;
 
     private readonly NotifyIcon _notify = new();
     private readonly ContextMenuStrip _menu = new();
-    private readonly ToolStripMenuItem _themeMenu = new("主题");
-    private readonly ToolStripMenuItem _darkItem = new("深色模式");
-    private readonly ToolStripMenuItem _soundItem = new("提醒音");
-    private readonly ToolStripMenuItem _pinItem = new("置顶");
-    private readonly ToolStripMenuItem _autoStartItem = new("开机自启");
+    private ToolStripMenuItem _themeMenu = null!;
+    private ToolStripMenuItem _darkItem = null!;
+    private ToolStripMenuItem _soundItem = null!;
+    private ToolStripMenuItem _pinItem = null!;
+    private ToolStripMenuItem _autoStartItem = null!;
     private readonly List<ToolStripMenuItem> _modeItems = new();
 
     private IntPtr _iconHandle;
@@ -45,6 +46,7 @@ public sealed class TrayIcon : IDisposable
         Action<bool> setAutoStart,
         Func<bool> getTopMost,
         Action<bool> setTopMost,
+        Action<bool> setLang,
         Action exit)
     {
         _settings = settings;
@@ -56,11 +58,13 @@ public sealed class TrayIcon : IDisposable
         _setAutoStart = setAutoStart;
         _getTopMost = getTopMost;
         _setTopMost = setTopMost;
+        _setLang = setLang;
         _exit = exit;
 
         _schemeId = settings.ThemeId;
         _dark = settings.Dark;
 
+        _menu.Opening += (_, _) => RefreshChecks();
         BuildMenu();
         _notify.Text = "DeskPing";
         _notify.ContextMenuStrip = _menu;
@@ -138,7 +142,7 @@ public sealed class TrayIcon : IDisposable
     }
 
     public void ShowBalloon(string text) =>
-        _notify.ShowBalloonTip(2500, "DeskPing 提醒", text, ToolTipIcon.Info);
+        _notify.ShowBalloonTip(2500, Locale.T("DeskPing 提醒", "DeskPing Reminder"), text, ToolTipIcon.Info);
 
     public void Dispose()
     {
@@ -152,14 +156,25 @@ public sealed class TrayIcon : IDisposable
         }
     }
 
+    /// <summary>语言切换后重建菜单（菜单文案随语言即时更新）。</summary>
+    private void RebuildMenu()
+    {
+        _menu.Items.Clear();
+        _modeItems.Clear();
+        BuildMenu();
+    }
+
     private void BuildMenu()
     {
-        _menu.Opening += (_, _) => RefreshChecks();
-
-        _menu.Items.Add(new ToolStripMenuItem("显示 / 隐藏", null, (_, _) => _toggleForm()));
+        _menu.Items.Add(new ToolStripMenuItem(Locale.T("显示 / 隐藏", "Show / Hide"), null, (_, _) => _toggleForm()));
         _menu.Items.Add(new ToolStripSeparator());
 
-        var modes = new[] { (TimerMode.CountUp, "正计时"), (TimerMode.CountDown, "倒计时"), (TimerMode.TargetTime, "目标时刻") };
+        var modes = new[]
+        {
+            (TimerMode.CountUp, Locale.T("正计时", "Count Up")),
+            (TimerMode.CountDown, Locale.T("倒计时", "Countdown")),
+            (TimerMode.TargetTime, Locale.T("目标时刻", "Target Time")),
+        };
         foreach (var (mode, name) in modes)
         {
             var item = new ToolStripMenuItem(name, null, (_, _) => _setMode(mode)) { Tag = mode };
@@ -168,11 +183,28 @@ public sealed class TrayIcon : IDisposable
         }
 
         _menu.Items.Add(new ToolStripSeparator());
+
+        var langMenu = new ToolStripMenuItem(Locale.T("语言", "Language"));
+        foreach (var (en, name) in new[] { (false, "中文"), (true, "English") })
+        {
+            langMenu.DropDownItems.Add(new ToolStripMenuItem(name, null, (_, _) =>
+            {
+                if (en == Locale.IsEnglish) return;
+                _setLang(en);
+                // 菜单正在收起，稍后再重建避免冲突
+                _menu.BeginInvoke((Action)RebuildMenu);
+            })
+            { Tag = en, Checked = en == Locale.IsEnglish });
+        }
+        _menu.Items.Add(langMenu);
+
+        _themeMenu = new ToolStripMenuItem(Locale.T("主题", "Theme"));
+        _themeMenu.DropDownItems.Clear();
         _menu.Items.Add(_themeMenu);
         for (var i = 0; i < PaperTheme.All.Length; i++)
         {
             var id = PaperTheme.All[i];
-            var item = new ToolStripMenuItem(PaperTheme.Names[i], null, (_, _) =>
+            var item = new ToolStripMenuItem(Locale.IsEnglish ? PaperTheme.NamesEn[i] : PaperTheme.Names[i], null, (_, _) =>
             {
                 _settings.ThemeId = id;
                 _setTheme(id, _dark);
@@ -182,6 +214,7 @@ public sealed class TrayIcon : IDisposable
             _themeMenu.DropDownItems.Add(item);
         }
 
+        _darkItem = new ToolStripMenuItem(Locale.T("深色模式", "Dark Mode"));
         _darkItem.Click += (_, _) =>
         {
             _dark = !_dark;
@@ -191,6 +224,7 @@ public sealed class TrayIcon : IDisposable
         };
         _menu.Items.Add(_darkItem);
 
+        _soundItem = new ToolStripMenuItem(Locale.T("提醒音", "Sound"));
         _soundItem.Click += (_, _) =>
         {
             _settings.SoundOn = !_settings.SoundOn;
@@ -198,9 +232,11 @@ public sealed class TrayIcon : IDisposable
         };
         _menu.Items.Add(_soundItem);
 
+        _pinItem = new ToolStripMenuItem(Locale.T("置顶", "Always on Top"));
         _pinItem.Click += (_, _) => _setTopMost(!_getTopMost());
         _menu.Items.Add(_pinItem);
 
+        _autoStartItem = new ToolStripMenuItem(Locale.T("开机自启", "Run at Startup"));
         _autoStartItem.Click += (_, _) =>
         {
             _settings.AutoStart = !_settings.AutoStart;
@@ -209,7 +245,7 @@ public sealed class TrayIcon : IDisposable
         _menu.Items.Add(_autoStartItem);
 
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(new ToolStripMenuItem("退出", null, (_, _) => _exit()));
+        _menu.Items.Add(new ToolStripMenuItem(Locale.T("退出", "Exit"), null, (_, _) => _exit()));
     }
 
     private void RefreshChecks()

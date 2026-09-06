@@ -96,6 +96,13 @@ dotnet build -c Release
 
 `C#` · `.NET 10` · `WinForms` · `GDI+` · `Windows Tray API`
 
+## 致谢
+
+感谢 **南梁 & Ad** 提供的支持。
+
+**总消耗 Token：6017.7 万（60,177,000）**  
+`1884.5 万 + 4133.2 万 = 6017.7 万`
+
 ## License
 
 [MIT](LICENSE)

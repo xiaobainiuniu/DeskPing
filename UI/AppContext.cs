@@ -31,6 +31,8 @@ public sealed class AppContext : ApplicationContext
             setTheme: (id, dark) => _form.SetTheme(id, dark),
             setSound: on => _form.SetSound(on),
             setAutoStart: SetAutoStart,
+            getTopMost: () => _form.Pinned,
+            setTopMost: v => _form.SetPinned(v),
             exit: ExitApp);
 
         _engine.Alarm += OnAlarm;
@@ -80,6 +82,7 @@ public sealed class AppContext : ApplicationContext
         _settings.TargetTime = _engine.Target.ToString("HH:mm");
         _settings.DailyRepeat = _engine.DailyRepeat;
         _settings.SoundOn = _engine.SoundOn;
+        _settings.TopMost = _form.Pinned;
         SettingsStore.Save(_settings);
 
         _tray.Dispose();

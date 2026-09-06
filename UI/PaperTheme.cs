@@ -2,7 +2,7 @@ using System.Drawing;
 
 namespace DeskPing.UI;
 
-/// <summary>画风色板（浅/深两版），完整取自 PaperTodo 的四套配色方案。</summary>
+/// <summary>画风色板（浅/深两版）。</summary>
 public sealed record Palette(
     Color Paper,       // 纸面背景
     Color PaperBorder, // 纸面描边
@@ -15,8 +15,7 @@ public sealed record Palette(
     Color Tint);       // 暖色叠加基（hover 底纹）
 
 /// <summary>
-/// 纸张画风主题：暖纸 / 墨 / 林 / 霞 四套配色，支持深色模式。
-/// 配色值移植自 PaperTodo（暖纸风桌面纸片应用），保证同一视觉语言。
+/// 纸张质感主题：暖纸 / 墨 / 林 / 霞 四套配色，支持深色模式。
 /// </summary>
 public static class PaperTheme
 {

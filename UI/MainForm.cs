@@ -9,58 +9,44 @@ using WinFormsTimer = System.Windows.Forms.Timer;
 namespace DeskPing.UI;
 
 /// <summary>
-/// 纸张主窗口：全自绘、无边框圆角纸片 + 系统阴影。
-/// 所有绘制按需进行——空闲时 CPU 为零，是功耗控制的核心。
+/// 主窗口：全自绘、无边框圆角纸片 + 系统阴影。
+/// 支持拖动、边角缩放、置顶；所有绘制按需进行，空闲时 CPU 为零。
 /// </summary>
 public sealed class MainForm : Form
 {
-    // ---- 布局常量（逻辑像素，随 DPI 自动缩放）----
-    private const int W = 384, H = 312;
-    private const int TitleBarH = 38, TabH = 36;
-    private const int SettingsY = 180, SettingsH = 46;
-    private const int StatusY = 282;
-    private static readonly Rectangle TimeRect = new(0, 74, W, 106);
-
-    // 设置行控件坐标（与下方 HitTest / 绘制保持一致）
-    private static readonly Rectangle RCountH = new(47, 191, 34, 24);
-    private static readonly Rectangle RCountM = new(91, 191, 34, 24);
-    private static readonly Rectangle RCountS = new(135, 191, 34, 24);
-    private static readonly Rectangle RTargetH = new(47, 191, 34, 24);
-    private static readonly Rectangle RTargetM = new(91, 191, 34, 24);
-    private static readonly Rectangle[] RPresets = { new(175, 191, 44, 24), new(225, 191, 44, 24), new(275, 191, 44, 24) };
-    private static readonly Rectangle RToday = new(131, 191, 44, 24);
-    private static readonly Rectangle RTomorrow = new(181, 191, 44, 24);
-    private static readonly Rectangle RPick = new(231, 191, 44, 24);
-    private static readonly Rectangle RDaily = new(285, 191, 54, 24);
+    private const int TitleBarH = 38;
+    private const int TabH = 34;
+    private const int StatusH = 24;
+    private const int SettingsRowH = 48;
+    private const int ButtonRowH = 40;
+    private const int Edge = 14;
+    private const int InputW = 36, InputH = 26, ChipW = 46, Gap = 6;
 
     private readonly TimerEngine _engine;
     private readonly AppSettings _settings;
     private readonly Action _onFirstHide;
 
-    private readonly TextBox _txtH = MakeInput(RCountH);
-    private readonly TextBox _txtM = MakeInput(RCountM);
-    private readonly TextBox _txtS = MakeInput(RCountS);
-    private readonly TextBox _txtTH = MakeInput(RTargetH);
-    private readonly TextBox _txtTM = MakeInput(RTargetM);
-
+    private readonly TextBox _txtH, _txtM, _txtS, _txtTH, _txtTM;
     private readonly WinFormsTimer _alertTimer;
+    private readonly WinFormsTimer _flashTimer;
 
     private DateTime _targetDate = DateTime.Today;
     private bool _targetDateIsCustom;
-
-    private bool _alerting;
+    private bool _alerting, _pinned;
     private double _animPhase;
     private int _soundCountdown;
-    private bool _flashActive;
-    private bool _everHidden;
-
-    private Zone _hover = Zone.None;
+    private bool _flashActive, _everHidden;
+    private string _statusOverride = "";
+    private Zone _hover = Zone.None, _pressed = Zone.None;
     private bool _syncingInputs;
+    private int _fontFitW, _fontFitH;
 
-    // 字体缓存（避免重复创建 GDI 对象）
     private Font _fTitle = null!, _fTab = null!, _fBig = null!, _fBigAlert = null!, _fSmall = null!, _fBtn = null!;
+    private Icon? _formIcon;
+    private IntPtr _formIconHandle;
 
     public event Action? ThemeChanged;
+    public bool Pinned => _pinned;
 
     public MainForm(TimerEngine engine, AppSettings settings, Action onFirstHide)
     {
@@ -70,35 +56,49 @@ public sealed class MainForm : Form
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
-        ClientSize = new Size(W, H);
-        ShowInTaskbar = true;
+        MinimumSize = new Size(330, 280);
         DoubleBuffered = true;
-        KeyPreview = true;
+        ShowInTaskbar = true;
 
+        // 先创建输入框，再设置窗口尺寸（否则 OnResize 里访问输入框会空引用）
+        _txtH = MakeInput();
+        _txtM = MakeInput();
+        _txtS = MakeInput();
+        _txtTH = MakeInput();
+        _txtTM = MakeInput();
         MakeFonts();
+        RebuildFonts();
         SetupInputs();
-        ApplySettingsFromStore();
-        ApplyTheme();
 
-        // 初始位置：优先恢复上次位置，否则桌面右下角。
-        var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, W, H);
-        var x = settings.WindowX >= 0 ? settings.WindowX : wa.Right - W - 48;
-        var y = settings.WindowY >= 0 ? settings.WindowY : wa.Bottom - H - 64;
-        Location = new Point(Math.Clamp(x, wa.Left - W + 80, wa.Right - 80), Math.Clamp(y, wa.Top, wa.Bottom - 60));
+        // 尺寸：恢复上次，否则默认
+        var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 384, 312);
+        var w = settings.WindowW > 0 ? Math.Min(settings.WindowW, wa.Width - 24) : 384;
+        var h = settings.WindowH > 0 ? Math.Min(settings.WindowH, wa.Height - 24) : 312;
+        ClientSize = new Size(Math.Max(w, MinimumSize.Width), Math.Max(h, MinimumSize.Height));
 
-        // 提醒动画节拍：仅提醒期间运行（25fps），平时完全停止。
-        _alertTimer = new WinFormsTimer { Interval = 40 };
-        _alertTimer.Tick += OnAlertTick;
+        // 位置：恢复上次，否则屏幕右下角
+        var x = settings.WindowX >= 0 ? settings.WindowX : wa.Right - Width - 48;
+        var y = settings.WindowY >= 0 ? settings.WindowY : wa.Bottom - Height - 64;
+        Location = new Point(Math.Clamp(x, wa.Left - Width + 80, wa.Right - 80), Math.Clamp(y, wa.Top, wa.Bottom - 60));
 
         _engine.Ticked += OnEngineTick;
         _engine.StateChanged += OnEngineStateChanged;
+
+        ApplySettingsFromStore();
+        UpdateModeUi();
+        ApplyTheme();
+        SetPinned(settings.TopMost);
+
+        _alertTimer = new WinFormsTimer { Interval = 40 };
+        _alertTimer.Tick += OnAlertTick;
+        _flashTimer = new WinFormsTimer { Interval = 1200 };
+        _flashTimer.Tick += OnFlashTick;
     }
 
-    private static TextBox MakeInput(Rectangle r)
+    private static TextBox MakeInput()
     {
         return new TextBox
         {
-            Bounds = r,
             BorderStyle = BorderStyle.None,
             TextAlign = HorizontalAlignment.Center,
             MaxLength = 2,
@@ -110,14 +110,22 @@ public sealed class MainForm : Form
 
     private void MakeFonts()
     {
-        var p = PaperTheme.Current;
         _fTitle = new Font(PaperTheme.FontName, 9.5f);
         _fTab = new Font(PaperTheme.FontName, 9.5f);
-        _fBig = new Font(PaperTheme.FontName, 40f, FontStyle.Regular);
-        _fBigAlert = new Font(PaperTheme.FontName, 30f, FontStyle.Bold);
         _fSmall = new Font(PaperTheme.FontName, 8.5f);
         _fBtn = new Font(PaperTheme.FontName, 10f, FontStyle.Bold);
-        _ = p;
+    }
+
+    /// <summary>大数字随窗口大小缩放（拖动缩放窗口时保持比例协调）。</summary>
+    private void RebuildFonts()
+    {
+        var scale = Math.Clamp(Math.Min(W / 384.0, H / 312.0), 0.62, 2.4);
+        _fBig?.Dispose();
+        _fBigAlert?.Dispose();
+        _fBig = new Font(PaperTheme.FontName, (float)(40 * scale));
+        _fBigAlert = new Font(PaperTheme.FontName, (float)(30 * scale), FontStyle.Bold);
+        _fontFitW = W;
+        _fontFitH = H;
     }
 
     private void SetupInputs()
@@ -131,8 +139,17 @@ public sealed class MainForm : Form
         foreach (var tb in new[] { _txtH, _txtM, _txtS, _txtTH, _txtTM })
         {
             tb.KeyPress += (_, e) => e.Handled = !char.IsDigit(e.KeyChar) && e.KeyChar != '\b';
-            tb.Enter += (_, _) => Invalidate(SettingsBounds());
-            tb.Leave += (_, _) => Invalidate(SettingsBounds());
+            // 点击即全选，直接输入覆盖旧值
+            tb.MouseUp += (_, e) =>
+            {
+                if (e.Button == MouseButtons.Left) tb.SelectAll();
+            };
+            tb.Enter += (_, _) =>
+            {
+                tb.SelectAll();
+                Invalidate();
+            };
+            tb.Leave += (_, _) => Invalidate();
             Controls.Add(tb);
         }
     }
@@ -178,6 +195,13 @@ public sealed class MainForm : Form
 
     public void SetSound(bool on) => _engine.SoundOn = on;
 
+    public void SetPinned(bool pinned)
+    {
+        _pinned = pinned;
+        if (!_alerting) TopMost = pinned;
+        Invalidate();
+    }
+
     public void ToggleVisible()
     {
         if (Visible && WindowState != FormWindowState.Minimized) HideToTray();
@@ -196,6 +220,8 @@ public sealed class MainForm : Form
     {
         s.WindowX = Left;
         s.WindowY = Top;
+        s.WindowW = W;
+        s.WindowH = H;
     }
 
     public void TriggerAlert()
@@ -221,7 +247,7 @@ public sealed class MainForm : Form
         _alerting = false;
         _alertTimer.Stop();
         FlashWindow(false);
-        TopMost = false;
+        TopMost = _pinned; // 恢复用户自己的置顶设置
         _engine.Reset();
         Invalidate();
     }
@@ -240,11 +266,12 @@ public sealed class MainForm : Form
 
     private void OnEngineTick()
     {
-        if (Visible) Invalidate(TimeRect); // 窗口隐藏时零刷新
+        if (Visible) Invalidate(TimeArea); // 窗口隐藏时零刷新
     }
 
     private void OnEngineStateChanged()
     {
+        _statusOverride = "";
         UpdateInputsFromEngine();
         if (Visible) Invalidate();
     }
@@ -254,12 +281,26 @@ public sealed class MainForm : Form
     private void OnAlertTick(object? sender, EventArgs e)
     {
         _animPhase += 0.16;
-        Invalidate(TimeRect);
-        Invalidate(new Rectangle(0, 0, W, TitleBarH)); // 边框呼吸
+        Invalidate(); // 边框呼吸 + 数字跳动，仅提醒期间全量重绘
 
         _soundCountdown++;
         if (_engine.SoundOn && _soundCountdown % 100 == 0) // 每 4 秒一声
             SystemSounds.Exclamation.Play();
+    }
+
+    private void OnFlashTick(object? sender, EventArgs e)
+    {
+        _flashTimer.Stop();
+        _statusOverride = "";
+        Invalidate();
+    }
+
+    private void FlashStatus(string text)
+    {
+        _statusOverride = text;
+        _flashTimer.Stop();
+        _flashTimer.Start();
+        Invalidate();
     }
 
     private void FlashWindow(bool start)
@@ -325,7 +366,62 @@ public sealed class MainForm : Form
         var mode = _engine.Mode;
         _txtH.Visible = _txtM.Visible = _txtS.Visible = mode == TimerMode.CountDown;
         _txtTH.Visible = _txtTM.Visible = mode == TimerMode.TargetTime;
+        LayoutInputs();
         UpdateInputsFromEngine();
+        Invalidate();
+    }
+
+    // ---------- 动态布局 ----------
+
+    private int W => ClientSize.Width;
+    private int H => ClientSize.Height;
+    private int SettingsTop => H - StatusH - ButtonRowH - 12 - SettingsRowH;
+    private int RowY => SettingsTop + (SettingsRowH - InputH) / 2 + 1;
+    private int ButtonsTop => H - StatusH - ButtonRowH - 6;
+    private int CountdownSX => (W - 302) / 2;
+    private int TargetSX => (W - 312) / 2;
+
+    private Rectangle TimeArea => new(Edge, TitleBarH + TabH + 4, W - Edge * 2, SettingsTop - 8 - (TitleBarH + TabH + 4));
+    private Rectangle StatusRect => new(Edge, H - StatusH, W - Edge * 2, StatusH);
+    private Rectangle CloseRect => new(W - 40, 7, 28, 24);
+    private Rectangle MinRect => new(W - 76, 7, 30, 24);
+    private Rectangle PinRect => new(W - 112, 7, 30, 24);
+    private Rectangle MainBtnRect => new(_alerting ? (W - 150) / 2 : (W - 208) / 2 + 78, ButtonsTop, _alerting ? 150 : 130, 38);
+    private Rectangle ResetBtnRect => new((W - 208) / 2, ButtonsTop, 68, 38);
+
+    private Rectangle RCountH => new(CountdownSX, RowY, InputW, InputH);
+    private Rectangle RCountM => new(CountdownSX + 46, RowY, InputW, InputH);
+    private Rectangle RCountS => new(CountdownSX + 92, RowY, InputW, InputH);
+    private Rectangle RTargetH => new(TargetSX, RowY, InputW, InputH);
+    private Rectangle RTargetM => new(TargetSX + 46, RowY, InputW, InputH);
+    private Rectangle RPreset(int i) => new(CountdownSX + 152 + i * (ChipW + Gap), RowY, ChipW, InputH);
+    private Rectangle RToday => new(TargetSX + 96, RowY, ChipW, InputH);
+    private Rectangle RTomorrow => new(TargetSX + 148, RowY, ChipW, InputH);
+    private Rectangle RPick => new(TargetSX + 200, RowY, ChipW, InputH);
+    private Rectangle RDaily => new(TargetSX + 254, RowY, 58, InputH);
+
+    private void LayoutInputs()
+    {
+        if (_engine.Mode == TimerMode.CountDown)
+        {
+            _txtH.Bounds = RCountH;
+            _txtM.Bounds = RCountM;
+            _txtS.Bounds = RCountS;
+        }
+        else if (_engine.Mode == TimerMode.TargetTime)
+        {
+            _txtTH.Bounds = RTargetH;
+            _txtTM.Bounds = RTargetM;
+        }
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_txtH == null) return; // 构造早期尚未创建输入框
+        UpdateRoundedRegion();
+        LayoutInputs();
+        if (Math.Abs(W - _fontFitW) + Math.Abs(H - _fontFitH) > 12) RebuildFonts();
         Invalidate();
     }
 
@@ -341,13 +437,30 @@ public sealed class MainForm : Form
             tb.BackColor = p.Paper;
             tb.ForeColor = p.Text;
         }
+        ApplyFormIcon();
         UpdateRoundedRegion();
         Invalidate();
     }
 
+    private void ApplyFormIcon()
+    {
+        using var bmp = TrayIcon.CreateClockBitmap();
+        var newHandle = bmp.GetHicon();
+        var newIcon = Icon.FromHandle(newHandle);
+        var oldHandle = _formIconHandle;
+        Icon = newIcon;
+        _formIcon = newIcon;
+        _formIconHandle = newHandle;
+        if (oldHandle != IntPtr.Zero) DestroyIcon(oldHandle);
+    }
+
     private void UpdateRoundedRegion()
     {
-        using var path = RoundedRectPath(new Rectangle(0, 0, W, H), PaperTheme.CornerRadius);
+        var r = new Rectangle(0, 0, W, H);
+        if (r.Width <= 0 || r.Height <= 0) return;
+        var radius = Math.Min(PaperTheme.CornerRadius, Math.Min(r.Width, r.Height) / 2);
+        using var path = RoundedRectPath(r, radius);
+        Region?.Dispose();
         Region = new Region(path);
     }
 
@@ -373,49 +486,85 @@ public sealed class MainForm : Form
         DrawStatus(g, p);
     }
 
-    /// <summary>纸片描边 + 分隔线。提醒时描边转为警示色。</summary>
+    /// <summary>纸片描边 + 分隔线 + 右下角缩放手柄。提醒时描边呼吸转警示色。</summary>
     private void DrawChrome(Graphics g, Palette p)
     {
+        var radius = Math.Min(PaperTheme.CornerRadius, Math.Min(W, H) / 2);
         if (_alerting)
         {
-            // 呼吸边框：警示色与纸面描边之间按相位往返
             var k = (Math.Sin(_animPhase) + 1) / 2;
             var border = Blend(p.PaperBorder, p.Danger, k);
             using var pen = new Pen(border, 2f);
-            using var path = RoundedRectPath(new Rectangle(1, 1, W - 3, H - 3), PaperTheme.CornerRadius);
+            using var path = RoundedRectPath(new Rectangle(1, 1, W - 3, H - 3), radius);
             g.DrawPath(pen, path);
         }
         else
         {
             using var pen = new Pen(p.PaperBorder, PaperTheme.BorderWidth);
-            using var path = RoundedRectPath(new Rectangle(1, 1, W - 3, H - 3), PaperTheme.CornerRadius);
+            using var path = RoundedRectPath(new Rectangle(1, 1, W - 3, H - 3), radius);
             g.DrawPath(pen, path);
         }
 
-        using var line = new Pen(PaperTheme.WithAlpha(p.PaperBorder, 110), 1f);
-        g.DrawLine(line, 14, TitleBarH, W - 14, TitleBarH);
-        g.DrawLine(line, 14, TitleBarH + TabH, W - 14, TitleBarH + TabH);
+        using (var line = new Pen(PaperTheme.WithAlpha(p.PaperBorder, 110), 1f))
+        {
+            g.DrawLine(line, 14, TitleBarH, W - 14, TitleBarH);
+            g.DrawLine(line, 14, TitleBarH + TabH, W - 14, TitleBarH + TabH);
+        }
+
+        // 右下角缩放手柄
+        using (var grip = new Pen(PaperTheme.WithAlpha(p.WeakText, 110), 1f))
+        {
+            for (var i = 0; i < 3; i++)
+                g.DrawLine(grip, W - 16 + i * 4, H - 5, W - 5, H - 16 + i * 4);
+        }
     }
 
     private void DrawTitleBar(Graphics g, Palette p)
     {
+        // 小圆点 + 应用名
+        using (var dot = new SolidBrush(p.Active))
+            g.FillEllipse(dot, 16, TitleBarH / 2f - 3, 6, 6);
         using (var brush = new SolidBrush(p.Text))
-        using (var weak = new SolidBrush(p.WeakText))
-        {
-            g.DrawString("DeskPing", _fTitle, brush, 16, (TitleBarH - _fTitle.Height) / 2f + 1);
-            g.DrawString("· 一张纸提醒", _fTitle, weak, 16 + TextWidth(g, "DeskPing", _fTitle) + 6, (TitleBarH - _fTitle.Height) / 2f + 1);
-        }
+            g.DrawString("DeskPing", _fTitle, brush, 28, (TitleBarH - _fTitle.Height) / 2f + 1);
 
-        DrawTitleButton(g, p, new Rectangle(W - 76, 7, 30, 24), "−", _hover == Zone.Minimize);
-        DrawTitleButton(g, p, new Rectangle(W - 40, 7, 28, 24), "✕", _hover == Zone.Close);
+        DrawPinButton(g, p);
+        DrawTitleButton(g, p, MinRect, "−", _hover == Zone.Minimize, _pressed == Zone.Minimize);
+        DrawTitleButton(g, p, CloseRect, "✕", _hover == Zone.Close, _pressed == Zone.Close);
     }
 
-    private void DrawTitleButton(Graphics g, Palette p, Rectangle r, string glyph, bool hover)
+    private void DrawPinButton(Graphics g, Palette p)
+    {
+        var r = PinRect;
+        using (var path = RoundedRectPath(r, 6))
+        {
+            if (_hover == Zone.Pin || _pinned)
+            {
+                using var b = new SolidBrush(_pinned ? p.Code : PaperTheme.HoverTint());
+                g.FillPath(b, path);
+            }
+        }
+
+        var cx = r.X + r.Width / 2f;
+        var cy = r.Y + r.Height / 2f;
+        using (var pen = new Pen(_pinned ? p.Active : p.WeakText, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            // 图钉针身与针头
+            g.DrawLine(pen, cx - 3.5f, cy + 5f, cx + 4.5f, cy - 3f);
+            g.DrawEllipse(pen, cx + 1.5f, cy - 7.5f, 5.5f, 5.5f);
+        }
+        if (_pinned)
+        {
+            using var b = new SolidBrush(p.Active);
+            g.FillEllipse(b, cx + 2.5f, cy - 6.5f, 3.5f, 3.5f);
+        }
+    }
+
+    private void DrawTitleButton(Graphics g, Palette p, Rectangle r, string glyph, bool hover, bool pressed)
     {
         using var path = RoundedRectPath(r, 6);
-        if (hover)
+        if (hover || pressed)
         {
-            using var b = new SolidBrush(PaperTheme.HoverTint());
+            using var b = new SolidBrush(pressed ? PaperTheme.WithAlpha(p.Tint, 60) : PaperTheme.HoverTint());
             g.FillPath(b, path);
         }
         using (var pen = new Pen(p.Text, 1.4f))
@@ -454,38 +603,49 @@ public sealed class MainForm : Form
             using (var brush = new SolidBrush(active ? p.Text : p.WeakText))
             {
                 var text = names[i];
-                var w = TextWidth(g, text, _fTab);
-                g.DrawString(text, _fTab, brush, r.X + (r.Width - w) / 2f, r.Y + (r.Height - _fTab.Height) / 2f + 1);
+                var tw = TextWidth(g, text, _fTab);
+                g.DrawString(text, _fTab, brush, r.X + (r.Width - tw) / 2f, r.Y + (r.Height - _fTab.Height) / 2f + 1);
             }
 
             if (active)
             {
                 using var brush = new SolidBrush(p.Active);
-                var w = TextWidth(g, names[i], _fTab);
-                g.FillRoundedRectangle(brush, new RectangleF(r.X + (r.Width - Math.Max(28, w + 10)) / 2f, r.Bottom - 5, Math.Max(28, w + 10), 3), 1.5f);
+                var tw = TextWidth(g, names[i], _fTab);
+                var uw = Math.Max(28, tw + 10);
+                g.FillRoundedRectangle(brush, new RectangleF(r.X + (r.Width - uw) / 2f, r.Bottom - 5, uw, 3), 1.5f);
             }
         }
     }
 
     private void DrawTime(Graphics g, Palette p)
     {
+        // 纸张横线衬底（极淡，仅在非提醒状态）
+        if (!_alerting)
+        {
+            using var rule = new Pen(PaperTheme.WithAlpha(p.PaperBorder, 40), 1f);
+            for (var i = 1; i <= 3; i++)
+            {
+                var ruleY = TimeArea.Top + TimeArea.Height * i / 4f;
+                g.DrawLine(rule, TimeArea.Left + 10, ruleY, TimeArea.Right - 10, ruleY);
+            }
+        }
+
         var text = DisplayText();
         var font = _alerting ? _fBigAlert : _fBig;
         var color = _alerting ? p.Danger : p.Text;
-        var w = TextWidth(g, text, font);
-        var baseY = TimeRect.Y + (TimeRect.Height - font.Height) / 2f + 4;
+        var tw = TextWidth(g, text, font);
+        var baseY = TimeArea.Top + (TimeArea.Height - font.Height) / 2f + 4;
         var y = baseY + (_alerting ? (float)(Math.Sin(_animPhase) * 6) : 0);
 
         using var brush = new SolidBrush(color);
-        g.DrawString(text, font, brush, (W - w) / 2f, y);
+        g.DrawString(text, font, brush, (W - tw) / 2f, y);
 
-        // 目标时刻模式：数字下方给一行小字提示剩余语义
         if (_engine.Mode == TimerMode.TargetTime && !_alerting && _engine.State == RunState.Running)
         {
             using var weak = new SolidBrush(p.WeakText);
             var hint = "剩余时间";
             var hw = TextWidth(g, hint, _fSmall);
-            g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeRect.Bottom - _fSmall.Height - 8);
+            g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeArea.Bottom - _fSmall.Height - 8);
         }
     }
 
@@ -504,7 +664,7 @@ public sealed class MainForm : Form
                 {
                     var hint = "从零开始累计 · 专注当下";
                     var w = TextWidth(g, hint, _fSmall);
-                    g.DrawString(hint, _fSmall, weak, (W - w) / 2f, SettingsY + (SettingsH - _fSmall.Height) / 2f);
+                    g.DrawString(hint, _fSmall, weak, (W - w) / 2f, SettingsTop + (SettingsRowH - _fSmall.Height) / 2f);
                 }
                 break;
         }
@@ -513,9 +673,8 @@ public sealed class MainForm : Form
     private void DrawCountdownSettings(Graphics g, Palette p)
     {
         using var weak = new SolidBrush(p.WeakText);
-        // 冒号
-        g.DrawString(":", _fSmall, weak, 85, SettingsY + (SettingsH - _fSmall.Height) / 2f - 2);
-        g.DrawString(":", _fSmall, weak, 129, SettingsY + (SettingsH - _fSmall.Height) / 2f - 2);
+        g.DrawString(":", _fSmall, weak, CountdownSX + 40, RowY + (InputH - _fSmall.Height) / 2f - 2);
+        g.DrawString(":", _fSmall, weak, CountdownSX + 94, RowY + (InputH - _fSmall.Height) / 2f - 2);
 
         DrawInputUnderline(g, p, _txtH);
         DrawInputUnderline(g, p, _txtM);
@@ -525,26 +684,25 @@ public sealed class MainForm : Form
         for (var i = 0; i < 3; i++)
         {
             var zone = i == 0 ? Zone.P1 : i == 1 ? Zone.P2 : Zone.P3;
-            DrawChipButton(g, p, RPresets[i], presets[i], _hover == zone, false, _fSmall);
+            DrawChipButton(g, p, RPreset(i), presets[i], _hover == zone, _pressed == zone, false);
         }
     }
 
     private void DrawTargetSettings(Graphics g, Palette p)
     {
         using var weak = new SolidBrush(p.WeakText);
-        g.DrawString(":", _fSmall, weak, 85, SettingsY + (SettingsH - _fSmall.Height) / 2f - 2);
+        g.DrawString(":", _fSmall, weak, TargetSX + 40, RowY + (InputH - _fSmall.Height) / 2f - 2);
 
         DrawInputUnderline(g, p, _txtTH);
         DrawInputUnderline(g, p, _txtTM);
 
         var todaySel = !_targetDateIsCustom && _targetDate == DateTime.Today;
         var tomorrowSel = !_targetDateIsCustom && _targetDate == DateTime.Today.AddDays(1);
-        DrawChipButton(g, p, RToday, "今天", _hover == Zone.Today, todaySel, _fSmall);
-        DrawChipButton(g, p, RTomorrow, "明天", _hover == Zone.Tomorrow, tomorrowSel, _fSmall);
-        DrawChipButton(g, p, RPick, "…", _hover == Zone.Pick, _targetDateIsCustom, _fSmall);
+        DrawChipButton(g, p, RToday, "今天", _hover == Zone.Today, _pressed == Zone.Today, todaySel);
+        DrawChipButton(g, p, RTomorrow, "明天", _hover == Zone.Tomorrow, _pressed == Zone.Tomorrow, tomorrowSel);
+        DrawChipButton(g, p, RPick, "…", _hover == Zone.Pick, _pressed == Zone.Pick, _targetDateIsCustom);
 
-        // 每日重复
-        var checkRect = new Rectangle(RDaily.X, RDaily.Y + 5, 14, 14);
+        var checkRect = new Rectangle(RDaily.X + 2, RowY + 6, 14, 14);
         var checkHover = _hover == Zone.Daily;
         using (var path = RoundedRectPath(checkRect, 3))
         {
@@ -563,21 +721,26 @@ public sealed class MainForm : Form
             }
         }
         using (var brush = new SolidBrush(_engine.DailyRepeat ? p.Text : p.WeakText))
-            g.DrawString("每日", _fSmall, brush, RDaily.X + 18, RDaily.Y + (RDaily.Height - _fSmall.Height) / 2f + 2);
+            g.DrawString("每日", _fSmall, brush, RDaily.X + 20, RowY + (InputH - _fSmall.Height) / 2f + 2);
     }
 
     private void DrawInputUnderline(Graphics g, Palette p, TextBox tb)
     {
         using var pen = new Pen(tb.Focused ? p.Active : p.WeakText, tb.Focused ? 2f : 1f);
-        g.DrawLine(pen, tb.Left, tb.Bottom + 3, tb.Right, tb.Bottom + 3);
+        g.DrawLine(pen, tb.Left - 4, tb.Bottom + 3, tb.Right + 4, tb.Bottom + 3);
     }
 
-    private void DrawChipButton(Graphics g, Palette p, Rectangle r, string text, bool hover, bool selected, Font font)
+    private void DrawChipButton(Graphics g, Palette p, Rectangle r, string text, bool hover, bool pressed, bool selected)
     {
         using var path = RoundedRectPath(r, PaperTheme.ControlRadius - 2);
         if (selected)
         {
             using var b = new SolidBrush(p.Code);
+            g.FillPath(b, path);
+        }
+        else if (pressed)
+        {
+            using var b = new SolidBrush(PaperTheme.WithAlpha(p.Tint, 60));
             g.FillPath(b, path);
         }
         else if (hover)
@@ -589,40 +752,43 @@ public sealed class MainForm : Form
             g.DrawPath(pen, path);
         using (var brush = new SolidBrush(selected ? p.Text : p.WeakText))
         {
-            var w = TextWidth(g, text, font);
-            g.DrawString(text, font, brush, r.X + (r.Width - w) / 2f, r.Y + (r.Height - font.Height) / 2f + 1);
+            var tw = TextWidth(g, text, _fSmall);
+            g.DrawString(text, _fSmall, brush, r.X + (r.Width - tw) / 2f, r.Y + (r.Height - _fSmall.Height) / 2f + 1);
         }
     }
 
     private void DrawButtons(Graphics g, Palette p)
     {
-        var mainRect = new Rectangle(_alerting ? (W - 150) / 2 : (W - 128) / 2, 232, _alerting ? 150 : 128, 38);
-        var resetRect = new Rectangle(mainRect.X - 76, 232, 64, 38);
-
         if (!_alerting)
-            DrawOutlineButton(g, p, resetRect, "重置", _hover == Zone.Reset);
+            DrawOutlineButton(g, p, ResetBtnRect, "重置", _hover == Zone.Reset, _pressed == Zone.Reset);
 
         var mainText = _alerting ? "知道了" : _engine.State == RunState.Running ? "暂停" : "开始";
         var mainColor = _alerting ? p.Danger : p.Active;
-        DrawFilledButton(g, p, mainRect, mainText, _hover == Zone.Main, mainColor);
+        DrawFilledButton(g, p, MainBtnRect, mainText, _hover == Zone.Main, _pressed == Zone.Main, mainColor);
     }
 
-    private void DrawFilledButton(Graphics g, Palette p, Rectangle r, string text, bool hover, Color fill)
+    private void DrawFilledButton(Graphics g, Palette p, Rectangle r, string text, bool hover, bool pressed, Color fill)
     {
+        var t = pressed ? 0.24 : hover ? 0.12 : 0.0;
         using var path = RoundedRectPath(r, 10);
-        using (var b = new SolidBrush(hover ? PaperTheme.Darken(fill, 0.12) : fill))
+        using (var b = new SolidBrush(PaperTheme.Darken(fill, t)))
             g.FillPath(b, path);
         using (var brush = new SolidBrush(p.Paper))
         {
-            var w = TextWidth(g, text, _fBtn);
-            g.DrawString(text, _fBtn, brush, r.X + (r.Width - w) / 2f, r.Y + (r.Height - _fBtn.Height) / 2f + 1);
+            var tw = TextWidth(g, text, _fBtn);
+            g.DrawString(text, _fBtn, brush, r.X + (r.Width - tw) / 2f, r.Y + (r.Height - _fBtn.Height) / 2f + 1);
         }
     }
 
-    private void DrawOutlineButton(Graphics g, Palette p, Rectangle r, string text, bool hover)
+    private void DrawOutlineButton(Graphics g, Palette p, Rectangle r, string text, bool hover, bool pressed)
     {
         using var path = RoundedRectPath(r, 10);
-        if (hover)
+        if (pressed)
+        {
+            using var b = new SolidBrush(PaperTheme.WithAlpha(p.Tint, 60));
+            g.FillPath(b, path);
+        }
+        else if (hover)
         {
             using var b = new SolidBrush(PaperTheme.HoverTint());
             g.FillPath(b, path);
@@ -631,17 +797,17 @@ public sealed class MainForm : Form
         g.DrawPath(pen, path);
         using (var brush = new SolidBrush(p.Text))
         {
-            var w = TextWidth(g, text, _fBtn);
-            g.DrawString(text, _fBtn, brush, r.X + (r.Width - w) / 2f, r.Y + (r.Height - _fBtn.Height) / 2f + 1);
+            var tw = TextWidth(g, text, _fBtn);
+            g.DrawString(text, _fBtn, brush, r.X + (r.Width - tw) / 2f, r.Y + (r.Height - _fBtn.Height) / 2f + 1);
         }
     }
 
     private void DrawStatus(Graphics g, Palette p)
     {
-        using var brush = new SolidBrush(_alerting ? p.Danger : p.WeakText);
+        using var brush = new SolidBrush(_alerting ? p.Danger : _statusOverride != "" ? p.Active : p.WeakText);
         var text = StatusText();
-        var w = TextWidth(g, text, _fSmall);
-        g.DrawString(text, _fSmall, brush, (W - w) / 2f, StatusY);
+        var tw = TextWidth(g, text, _fSmall);
+        g.DrawString(text, _fSmall, brush, (W - tw) / 2f, StatusRect.Y + (StatusRect.Height - _fSmall.Height) / 2f);
     }
 
     // ---------- 文案 ----------
@@ -670,6 +836,7 @@ public sealed class MainForm : Form
     private string StatusText()
     {
         if (_alerting) return "点「知道了」停止提醒";
+        if (_statusOverride != "") return _statusOverride;
         return (_engine.Mode, _engine.State) switch
         {
             (TimerMode.CountUp, RunState.Stopped) => "点开始 · 累计专注时长",
@@ -698,26 +865,25 @@ public sealed class MainForm : Form
 
     // ---------- 鼠标交互 ----------
 
-    private enum Zone { None, Close, Minimize, Tab1, Tab2, Tab3, Main, Reset, P1, P2, P3, Today, Tomorrow, Pick, Daily }
+    private enum Zone { None, Close, Minimize, Pin, Tab1, Tab2, Tab3, Main, Reset, P1, P2, P3, Today, Tomorrow, Pick, Daily }
 
     private Zone HitTest(Point pt)
     {
-        var mode = _engine.Mode;
-        if (new Rectangle(W - 40, 7, 28, 24).Contains(pt)) return Zone.Close;
-        if (new Rectangle(W - 76, 7, 30, 24).Contains(pt)) return Zone.Minimize;
+        if (CloseRect.Contains(pt)) return Zone.Close;
+        if (MinRect.Contains(pt)) return Zone.Minimize;
+        if (PinRect.Contains(pt)) return Zone.Pin;
         if (pt.Y >= TitleBarH && pt.Y < TitleBarH + TabH)
             return pt.X < W / 3 ? Zone.Tab1 : pt.X < W * 2 / 3 ? Zone.Tab2 : Zone.Tab3;
 
-        var mainRect = new Rectangle(_alerting ? (W - 150) / 2 : (W - 128) / 2, 232, _alerting ? 150 : 128, 38);
-        if (mainRect.Contains(pt)) return Zone.Main;
-        if (!_alerting && new Rectangle(mainRect.X - 76, 232, 64, 38).Contains(pt)) return Zone.Reset;
+        if (MainBtnRect.Contains(pt)) return Zone.Main;
+        if (!_alerting && ResetBtnRect.Contains(pt)) return Zone.Reset;
 
-        if (mode == TimerMode.CountDown)
+        if (_engine.Mode == TimerMode.CountDown)
         {
             for (var i = 0; i < 3; i++)
-                if (RPresets[i].Contains(pt)) return i == 0 ? Zone.P1 : i == 1 ? Zone.P2 : Zone.P3;
+                if (RPreset(i).Contains(pt)) return i == 0 ? Zone.P1 : i == 1 ? Zone.P2 : Zone.P3;
         }
-        else if (mode == TimerMode.TargetTime)
+        else if (_engine.Mode == TimerMode.TargetTime)
         {
             if (RToday.Contains(pt)) return Zone.Today;
             if (RTomorrow.Contains(pt)) return Zone.Tomorrow;
@@ -742,9 +908,10 @@ public sealed class MainForm : Form
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if (_hover != Zone.None)
+        if (_hover != Zone.None || _pressed != Zone.None)
         {
             _hover = Zone.None;
+            _pressed = Zone.None;
             Cursor = Cursors.Default;
             Invalidate();
         }
@@ -755,23 +922,35 @@ public sealed class MainForm : Form
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
         var z = HitTest(e.Location);
-        if (z == Zone.None && e.Y < TitleBarH)
+        if (z == Zone.None)
         {
-            // 标题区拖动窗口
-            ReleaseCapture();
-            SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+            if (e.Y < TitleBarH)
+            {
+                // 标题区拖动窗口
+                ReleaseCapture();
+                SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+            }
+            return;
         }
+        _pressed = z;
+        Invalidate();
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
         if (e.Button != MouseButtons.Left) return;
+        _pressed = Zone.None;
+        Invalidate();
+
         switch (HitTest(e.Location))
         {
             case Zone.Close:
             case Zone.Minimize:
                 HideToTray();
+                break;
+            case Zone.Pin:
+                SetPinned(!_pinned);
                 break;
             case Zone.Tab1:
                 SetMode(TimerMode.CountUp);
@@ -783,6 +962,7 @@ public sealed class MainForm : Form
                 SetMode(TimerMode.TargetTime);
                 break;
             case Zone.Main:
+                _statusOverride = "";
                 if (_alerting) StopAlert();
                 else if (_engine.State == RunState.Running) _engine.Pause();
                 else _engine.Start();
@@ -791,6 +971,7 @@ public sealed class MainForm : Form
             case Zone.Reset:
                 StopAlert();
                 _engine.Reset();
+                FlashStatus("已重置");
                 Invalidate();
                 break;
             case Zone.P1:
@@ -876,12 +1057,40 @@ public sealed class MainForm : Form
         HideToTray();
     }
 
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg != WM_NCHITTEST) return;
+
+        // 无边框窗口手动实现边角缩放
+        var x = unchecked((short)(long)m.LParam);
+        var y = unchecked((short)((long)m.LParam >> 16));
+        var pt = PointToClient(new Point(x, y));
+        var r = ClientRectangle;
+        const int grab = 6;
+        var left = pt.X <= grab;
+        var right = pt.X >= r.Right - grab;
+        var top = pt.Y <= grab;
+        var bottom = pt.Y >= r.Bottom - grab;
+
+        var ht = HTCLIENT;
+        if (right && bottom) ht = HTBOTTOMRIGHT;
+        else if (left && bottom) ht = HTBOTTOMLEFT;
+        else if (right && top) ht = HTTOPRIGHT;
+        else if (left && top) ht = HTTOPLEFT;
+        else if (right) ht = HTRIGHT;
+        else if (bottom) ht = HTBOTTOM;
+        else if (left) ht = HTLEFT;
+        else if (top) ht = HTTOP;
+        if (ht != HTCLIENT) m.Result = (IntPtr)ht;
+    }
+
     protected override CreateParams CreateParams
     {
         get
         {
             var cp = base.CreateParams;
-            cp.ClassStyle |= CS_DROPSHADOW; // 系统纸片阴影，零额外绘制成本
+            cp.ClassStyle |= CS_DROPSHADOW; // 系统阴影，零额外绘制成本
             return cp;
         }
     }
@@ -893,15 +1102,20 @@ public sealed class MainForm : Form
             _engine.Ticked -= OnEngineTick;
             _engine.StateChanged -= OnEngineStateChanged;
             _alertTimer.Dispose();
+            _flashTimer.Dispose();
             foreach (var f in new[] { _fTitle, _fTab, _fBig, _fBigAlert, _fSmall, _fBtn }) f.Dispose();
             foreach (var tb in new[] { _txtH, _txtM, _txtS, _txtTH, _txtTM }) tb.Font.Dispose();
+            if (_formIconHandle != IntPtr.Zero)
+            {
+                DestroyIcon(_formIconHandle);
+                _formIconHandle = IntPtr.Zero;
+            }
+            _formIcon?.Dispose();
         }
         base.Dispose(disposing);
     }
 
     // ---------- 工具 ----------
-
-    private static Rectangle SettingsBounds() => new(0, SettingsY, W, SettingsH);
 
     private static GraphicsPath RoundedRectPath(Rectangle r, int radius)
     {
@@ -925,6 +1139,10 @@ public sealed class MainForm : Form
     private const int CS_DROPSHADOW = 0x00020000;
     private const int WM_NCLBUTTONDOWN = 0x00A1;
     private const int HTCAPTION = 2;
+    private const int WM_NCHITTEST = 0x0084;
+    private const int HTCLIENT = 1;
+    private const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12;
+    private const int HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
     private const uint FLASHW_STOP = 0, FLASHW_ALL = 3, FLASHW_TIMER = 12;
 
     [DllImport("user32.dll")]
@@ -935,6 +1153,9 @@ public sealed class MainForm : Form
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr handle);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FLASHWINFO

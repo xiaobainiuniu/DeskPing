@@ -32,7 +32,7 @@ public sealed class TrayIcon : IDisposable
     private ToolStripMenuItem _autoStartItem = null!;
     private readonly List<ToolStripMenuItem> _modeItems = new();
 
-    private IntPtr _iconHandle;
+    private Icon? _icon;
     private string _schemeId;
     private bool _dark;
 
@@ -135,10 +135,10 @@ public sealed class TrayIcon : IDisposable
         PaperTheme.Apply(_schemeId, _dark);
 
         using var bmp = CreateClockBitmap();
-        var h = bmp.GetHicon();
-        if (_iconHandle != IntPtr.Zero) DestroyIcon(_iconHandle);
-        _iconHandle = h;
-        _notify.Icon = Icon.FromHandle(h);
+        var newIcon = Icon.FromHandle(bmp.GetHicon());
+        _notify.Icon = newIcon;
+        _icon?.Dispose(); // Icon.Dispose 会销毁其句柄
+        _icon = newIcon;
     }
 
     public void ShowBalloon(string text) =>
@@ -149,11 +149,7 @@ public sealed class TrayIcon : IDisposable
         _notify.Visible = false;
         _notify.Dispose();
         _menu.Dispose();
-        if (_iconHandle != IntPtr.Zero)
-        {
-            DestroyIcon(_iconHandle);
-            _iconHandle = IntPtr.Zero;
-        }
+        _icon?.Dispose();
     }
 
     /// <summary>语言切换后重建菜单（菜单文案随语言即时更新）。</summary>
@@ -259,7 +255,4 @@ public sealed class TrayIcon : IDisposable
         _pinItem.Checked = _getTopMost();
         _autoStartItem.Checked = _settings.AutoStart;
     }
-
-    [DllImport("user32.dll")]
-    private static extern bool DestroyIcon(IntPtr handle);
 }

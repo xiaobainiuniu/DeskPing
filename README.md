@@ -15,7 +15,7 @@ Count-up / countdown / target time, tray resident, always-on-top, freely resizab
 | 模式 Mode | 说明 Description |
 | :--- | :--- |
 | **正计时 Count-up** | 从零开始累计，适合专注时长、通勤、健身等 / Counts up from zero, for focus sessions, commutes, workouts |
-| **倒计时 Countdown** | 设定时长（时:分:秒直接输入），归零即提醒 / Type a duration (H:M:S); alert at zero |
+| **倒计时 Countdown** | 设定时长（时:分:秒直接输入），归零即提醒；下方有**隐形备注**（悬浮输入，提醒时随气泡显示）/ Type a duration (H:M:S); alert at zero; a **hidden note** below (hover to type, shown in the balloon on alert) |
 | **目标时刻 Target time** | 设定时刻（今天 / 明天 / 自定义日期），到点提醒；支持**每日重复**（到点后自动顺延一天）/ Pick a moment (today / tomorrow / custom date); supports **daily repeat** |
 
 ### 到点提醒 Alert (multi-layer, hard to miss)

@@ -10,23 +10,24 @@ namespace DeskPing.UI;
 
 /// <summary>
 /// 主窗口：全自绘、无边框圆角纸片 + 系统阴影。
-/// 紧凑布局：模式切换收进标题栏下拉，窗口默认约 264×228，可自由缩放。
+/// 紧凑布局：模式切换在标题栏最左侧下拉，窗口默认约 264×228，可自由缩放。
 /// 支持拖动、边角缩放、置顶；所有绘制按需进行，空闲时 CPU 为零。
 /// </summary>
 public sealed class MainForm : Form
 {
     private const int TitleBarH = 30;
     private const int StatusH = 16;
-    private const int SettingsRowH = 32;
     private const int ButtonRowH = 32;
     private const int Edge = 12;
     private const int InputW = 32, InputH = 22;
+    private const int NoteRowH = 20; // 隐形备注行（仅倒计时）
 
     private readonly TimerEngine _engine;
     private readonly AppSettings _settings;
     private readonly Action _onFirstHide;
 
     private readonly TextBox _txtH, _txtM, _txtS, _txtTH, _txtTM;
+    private readonly TextBox _txtNote;
     private readonly TextBox[] _inputs;
     private readonly WinFormsTimer _alertTimer;
     private readonly WinFormsTimer _flashTimer;
@@ -41,11 +42,11 @@ public sealed class MainForm : Form
     private Zone _hover = Zone.None, _pressed = Zone.None;
     private bool _syncingInputs;
     private bool _clickWasFocused, _enterOnClick;
+    private bool _noteHover;
     private int _fontFitW, _fontFitH;
 
     private Font _fBig = null!, _fBigAlert = null!, _fSmall = null!, _fBtn = null!;
     private Icon? _formIcon;
-    private IntPtr _formIconHandle;
 
     private ModePopup? _modePopup;
     private bool _suppressPopupReopen;
@@ -61,7 +62,7 @@ public sealed class MainForm : Form
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
-        MinimumSize = new Size(248, 206);
+        MinimumSize = new Size(248, 220);
         DoubleBuffered = true;
         ShowInTaskbar = true;
 
@@ -71,14 +72,15 @@ public sealed class MainForm : Form
         _txtS = MakeInput();
         _txtTH = MakeInput();
         _txtTM = MakeInput();
+        _txtNote = MakeNoteInput();
         _inputs = new[] { _txtH, _txtM, _txtS, _txtTH, _txtTM };
         MakeFonts();
         RebuildFonts();
         SetupInputs();
 
-        // 尺寸：布局版本 >= 3 才恢复上次尺寸（旧版存的尺寸偏大，一次性放弃）
+        // 尺寸：布局版本 >= 4 才恢复上次尺寸（旧版存的尺寸偏大，一次性放弃）
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 264, 228);
-        var restore = settings.LayoutV >= 3 && settings.WindowW > 0 && settings.WindowH > 0;
+        var restore = settings.LayoutV >= 4 && settings.WindowW > 0 && settings.WindowH > 0;
         var w = Math.Min(restore ? settings.WindowW : 264, wa.Width - 24);
         var h = Math.Min(restore ? settings.WindowH : 228, wa.Height - 24);
         ClientSize = new Size(Math.Max(w, MinimumSize.Width), Math.Max(h, MinimumSize.Height));
@@ -116,6 +118,20 @@ public sealed class MainForm : Form
         };
     }
 
+    /// <summary>倒计时隐形备注框：无边框同底色，空内容时不可见，悬浮时才露底横线。</summary>
+    private static TextBox MakeNoteInput()
+    {
+        return new TextBox
+        {
+            BorderStyle = BorderStyle.None,
+            TextAlign = HorizontalAlignment.Left,
+            MaxLength = 34,
+            Font = new Font(PaperTheme.FontName, 8.5f),
+            TabStop = true,
+            Visible = false,
+        };
+    }
+
     private void MakeFonts()
     {
         _fSmall = new Font(PaperTheme.FontName, 8.5f);
@@ -131,14 +147,17 @@ public sealed class MainForm : Form
         _fBig = new Font(PaperTheme.FontName, (float)(38 * scale));
         _fBigAlert = new Font(PaperTheme.FontName, (float)(28 * scale), FontStyle.Bold);
 
-        // 输入框字号温和跟随窗口缩放（每框独立 Font 实例，替换即释放）
-        var inputSize = Math.Clamp(scale, 0.8f, 1.6f);
+        // 输入框字号温和跟随窗口缩放（封顶：数字不能撑出小框）
+        var inputSize = Math.Clamp(scale, 0.8f, 1.25f);
         foreach (var tb in _inputs)
         {
             var old = tb.Font;
             tb.Font = new Font(PaperTheme.FontName, (float)(9.5 * inputSize));
             old.Dispose();
         }
+        var oldNote = _txtNote.Font;
+        _txtNote.Font = new Font(PaperTheme.FontName, (float)(8.5 * inputSize));
+        oldNote.Dispose();
         SyncInputMargins();
 
         _fontFitW = W;
@@ -189,12 +208,20 @@ public sealed class MainForm : Form
             };
             Controls.Add(tb);
         }
+
+        // 隐形备注：悬浮 / 聚焦 / 有内容时才露底横线，其余时间完全隐身
+        _txtNote.MouseEnter += (_, _) => { _noteHover = true; Invalidate(); };
+        _txtNote.MouseLeave += (_, _) => { _noteHover = false; Invalidate(); };
+        _txtNote.Enter += (_, _) => Invalidate();
+        _txtNote.Leave += (_, _) => Invalidate();
+        Controls.Add(_txtNote);
     }
 
     private void ApplySettingsFromStore()
     {
         _engine.SoundOn = _settings.SoundOn;
         _engine.DailyRepeat = _settings.DailyRepeat;
+        _txtNote.Text = _settings.Note;
 
         _engine.SetMode(_settings.Mode switch
         {
@@ -246,6 +273,9 @@ public sealed class MainForm : Form
         if (!_alerting) TopMost = pinned;
         Invalidate();
     }
+
+    /// <summary>倒计时隐形备注内容（提醒气泡与提醒画面共用）。</summary>
+    public string NoteText => _txtNote.Text;
 
     public void ToggleVisible()
     {
@@ -440,6 +470,7 @@ public sealed class MainForm : Form
         var mode = _engine.Mode;
         _txtH.Visible = _txtM.Visible = _txtS.Visible = mode == TimerMode.CountDown;
         _txtTH.Visible = _txtTM.Visible = mode == TimerMode.TargetTime;
+        _txtNote.Visible = mode == TimerMode.CountDown;
         LayoutInputs();
         UpdateInputsFromEngine();
         Invalidate();
@@ -449,18 +480,20 @@ public sealed class MainForm : Form
 
     private int W => ClientSize.Width;
     private int H => ClientSize.Height;
-    private int SettingsTop => H - StatusH - ButtonRowH - 8 - SettingsRowH;
-    private int RowY => SettingsTop + (SettingsRowH - InputH) / 2 + 1;
+    // 自下而上：状态栏 → 按钮行 → 隐形备注行（倒计时）→ 输入行 → 大数字区
     private int ButtonsTop => H - StatusH - ButtonRowH - 4;
+    private int NoteRowY => ButtonsTop - 5 - NoteRowH;
+    private int RowY => NoteRowY - 6 - InputH;
+    private int TimeBottom => RowY - 14;
     private int TargetSX => (W - 236) / 2;
     private int CountSX => (W - 104) / 2;
 
-    private Rectangle TimeArea => new(Edge, TitleBarH + 6, W - Edge * 2, SettingsTop - 14 - (TitleBarH + 6));
+    private Rectangle TimeArea => new(Edge, TitleBarH + 6, W - Edge * 2, TimeBottom - (TitleBarH + 6));
     private Rectangle StatusRect => new(Edge, H - StatusH, W - Edge * 2, StatusH);
     private Rectangle CloseRect => new(W - 32, 4, 24, 22);
     private Rectangle MinRect => new(W - 58, 4, 24, 22);
     private Rectangle PinRect => new(W - 84, 4, 24, 22);
-    private Rectangle ModeBtnRect => new(68, 4, 92, 22);
+    private Rectangle ModeBtnRect => new(8, 4, 92, 22);
     private Rectangle MainBtnRect => new(_alerting ? (W - 150) / 2 : (W - 178) / 2 + 68, ButtonsTop, _alerting ? 150 : 110, 32);
     private Rectangle ResetBtnRect => new((W - 178) / 2, ButtonsTop, 60, 32);
 
@@ -473,9 +506,11 @@ public sealed class MainForm : Form
     private Rectangle RTomorrow => new(TargetSX + 112, RowY, 46, InputH);
     private Rectangle RPick => new(TargetSX + 162, RowY, 26, InputH);
     private Rectangle RDaily => new(TargetSX + 192, RowY, 44, InputH);
+    private Rectangle NoteRect => new((W - 170) / 2, NoteRowY, 170, NoteRowH);
 
     private void LayoutInputs()
     {
+        _txtNote.Bounds = NoteRect;
         if (_engine.Mode == TimerMode.CountDown)
         {
             _txtH.Bounds = RCountH;
@@ -497,10 +532,9 @@ public sealed class MainForm : Form
 
     private static void SetInputMargins(TextBox tb)
     {
-        var w = 0;
-        using (var g = tb.CreateGraphics())
-            w = (int)Math.Ceiling(g.MeasureString("88", tb.Font).Width);
-        var margin = Math.Max(0, (InputW - w) / 2 - 1);
+        // 用 GDI 度量（与文本框实际渲染一致），且无需控件句柄，DPI 切换时安全
+        var w = TextRenderer.MeasureText("88", tb.Font).Width;
+        var margin = Math.Max(0, (InputW - w) / 2);
         SendMessage(tb.Handle, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN),
             (IntPtr)((margin << 16) | (margin & 0xFFFF)));
     }
@@ -519,7 +553,11 @@ public sealed class MainForm : Form
     {
         base.OnDpiChanged(e);
         // 系统缩放完字体后，重新同步输入框边距
-        if (IsHandleCreated) BeginInvoke((Action)SyncInputMargins);
+        if (IsHandleCreated && !IsDisposed)
+        {
+            try { BeginInvoke((Action)SyncInputMargins); }
+            catch { /* DPI 切换瞬间句柄可能正在重建，忽略 */ }
+        }
     }
 
     // ---------- 主题 ----------
@@ -534,6 +572,8 @@ public sealed class MainForm : Form
             tb.BackColor = p.Paper;
             tb.ForeColor = p.Text;
         }
+        _txtNote.BackColor = p.Paper;
+        _txtNote.ForeColor = p.Text;
         ApplyFormIcon();
         UpdateRoundedRegion();
         Invalidate();
@@ -542,13 +582,11 @@ public sealed class MainForm : Form
     private void ApplyFormIcon()
     {
         using var bmp = TrayIcon.CreateClockBitmap();
-        var newHandle = bmp.GetHicon();
-        var newIcon = Icon.FromHandle(newHandle);
-        var oldHandle = _formIconHandle;
+        var newIcon = Icon.FromHandle(bmp.GetHicon());
+        var old = _formIcon;
         Icon = newIcon;
         _formIcon = newIcon;
-        _formIconHandle = newHandle;
-        if (oldHandle != IntPtr.Zero) DestroyIcon(oldHandle);
+        old?.Dispose(); // Icon.Dispose 会销毁其句柄，避免手动 DestroyIcon 留下悬挂句柄
     }
 
     private void UpdateRoundedRegion()
@@ -614,9 +652,6 @@ public sealed class MainForm : Form
 
     private void DrawTitleBar(Graphics g, Palette p)
     {
-        using (var dot = new SolidBrush(p.Active))
-            g.FillEllipse(dot, 12, TitleBarH / 2f - 3, 6, 6);
-
         DrawModeButton(g, p);
         DrawPinButton(g, p);
         DrawTitleButton(g, p, MinRect, "−", _hover == Zone.Minimize, _pressed == Zone.Minimize);
@@ -718,8 +753,8 @@ public sealed class MainForm : Form
         var font = _alerting ? _fBigAlert : _fBig;
         var color = _alerting ? p.Danger : p.Text;
         var tw = TextWidth(g, text, font);
-        var baseY = TimeArea.Top + (TimeArea.Height - font.Height) / 2f + 4;
-        var y = baseY + (_alerting ? (float)(Math.Sin(_animPhase) * 6) : 0);
+        // 按数字墨水高度垂直居中（用整行高居中时大字号数字会明显飘高）
+        var y = CenterDigitY(g, TimeArea, font) + (_alerting ? (float)(Math.Sin(_animPhase) * 6) : 0);
 
         using var brush = new SolidBrush(color);
         g.DrawString(text, font, brush, (W - tw) / 2f, y);
@@ -730,6 +765,14 @@ public sealed class MainForm : Form
             var hint = Locale.T("剩余时间", "Remaining");
             var hw = TextWidth(g, hint, _fSmall);
             g.DrawString(hint, _fSmall, weak, (W - hw) / 2f, TimeArea.Bottom - _fSmall.Height - 6);
+        }
+
+        // 倒计时到点：把隐形备注打到提醒画面正中央下方
+        if (_alerting && _engine.Mode == TimerMode.CountDown && _txtNote.Text.Length > 0)
+        {
+            using var weak = new SolidBrush(Blend(p.Danger, p.WeakText, 0.45));
+            var nw = TextWidth(g, _txtNote.Text, _fSmall);
+            g.DrawString(_txtNote.Text, _fSmall, weak, (W - nw) / 2f, TimeArea.Bottom - _fSmall.Height - 4);
         }
     }
 
@@ -748,7 +791,7 @@ public sealed class MainForm : Form
                 {
                     var hint = Locale.T("从零开始累计 · 专注当下", "Counting up from zero · stay focused");
                     var w = TextWidth(g, hint, _fSmall);
-                    g.DrawString(hint, _fSmall, weak, (W - w) / 2f, SettingsTop + (SettingsRowH - _fSmall.Height) / 2f);
+                    g.DrawString(hint, _fSmall, weak, (W - w) / 2f, RowY + (InputH - _fSmall.Height) / 2f);
                 }
                 break;
         }
@@ -763,6 +806,22 @@ public sealed class MainForm : Form
         DrawInputUnderline(g, p, _txtH);
         DrawInputUnderline(g, p, _txtM);
         DrawInputUnderline(g, p, _txtS);
+
+        DrawNoteUnderline(g, p);
+    }
+
+    /// <summary>隐形备注底横线：空内容且未悬浮未聚焦时完全不画。</summary>
+    private void DrawNoteUnderline(Graphics g, Palette p)
+    {
+        var focused = _txtNote.Focused;
+        var hasText = _txtNote.Text.Length > 0;
+        if (!focused && !_noteHover && !hasText) return;
+
+        var w = focused ? 2f : _noteHover ? 1.5f : 1f;
+        var c = focused ? p.Active : _noteHover ? p.WeakText : PaperTheme.WithAlpha(p.WeakText, 110);
+        using var pen = new Pen(c, w);
+        var r = NoteRect;
+        g.DrawLine(pen, r.X - 4, r.Bottom + 3, r.Right + 4, r.Bottom + 3);
     }
 
     private void DrawTargetSettings(Graphics g, Palette p)
@@ -1168,11 +1227,7 @@ public sealed class MainForm : Form
             _flashTimer.Dispose();
             foreach (var f in new[] { _fBig, _fBigAlert, _fSmall, _fBtn }) f.Dispose();
             foreach (var tb in _inputs) tb.Font.Dispose();
-            if (_formIconHandle != IntPtr.Zero)
-            {
-                DestroyIcon(_formIconHandle);
-                _formIconHandle = IntPtr.Zero;
-            }
+            _txtNote.Font.Dispose();
             _formIcon?.Dispose();
         }
         base.Dispose(disposing);
@@ -1193,6 +1248,14 @@ public sealed class MainForm : Form
     }
 
     private static float TextWidth(Graphics g, string text, Font f) => g.MeasureString(text, f).Width;
+
+    /// <summary>按数字字形实际墨水高度垂直居中（避免大字号时数字飘高不居中）。</summary>
+    private static float CenterDigitY(Graphics g, Rectangle area, Font f)
+    {
+        // 实测（YaHei UI，GDI+ AntiAliasGridFit）：数字墨水中心相对 DrawString
+        // 起点的偏移 ≈ 行高(f.GetHeight) 的 0.512 倍，与字号线性，且随 DPI 等比缩放
+        return area.Top + area.Height / 2f - f.GetHeight(g) * 0.512f;
+    }
 
     private static Color Blend(Color a, Color b, double t) => Color.FromArgb(
         (int)(a.R + (b.R - a.R) * t),
@@ -1219,9 +1282,6 @@ public sealed class MainForm : Form
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern bool DestroyIcon(IntPtr handle);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FLASHWINFO

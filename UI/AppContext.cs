@@ -94,7 +94,7 @@ public sealed class AppContext : ApplicationContext
         _settings.SoundOn = _engine.SoundOn;
         _settings.TopMost = _form.Pinned;
         _settings.Lang = Locale.IsEnglish ? "en" : "zh";
-        _settings.LayoutV = 2;
+        _settings.LayoutV = 3;
         SettingsStore.Save(_settings);
 
         _tray.Dispose();

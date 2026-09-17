@@ -51,6 +51,13 @@ public sealed class AppContext : ApplicationContext
 
     private void OnAlarm()
     {
+        if (_form.IsDisposed) return;
+        if (_form.InvokeRequired)
+        {
+            try { _form.BeginInvoke((Action)OnAlarm); } catch { }
+            return;
+        }
+
         var text = _engine.Mode switch
         {
             TimerMode.CountDown => _form.NoteText.Length > 0

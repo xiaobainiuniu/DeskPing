@@ -356,11 +356,23 @@ public sealed class MainForm : Form
 
     private void OnEngineTick()
     {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke((Action)OnEngineTick); } catch { }
+            return;
+        }
         if (Visible) Invalidate(TimeArea); // 窗口隐藏时零刷新
     }
 
     private void OnEngineStateChanged()
     {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke((Action)OnEngineStateChanged); } catch { }
+            return;
+        }
         _statusOverride = "";
         UpdateModeUi();
     }

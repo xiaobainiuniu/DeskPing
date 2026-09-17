@@ -51,20 +51,41 @@ public sealed class AppContext : ApplicationContext
 
     private void OnAlarm()
     {
-        var text = _engine.Mode switch
+        RunOnUiThread(() =>
         {
-            TimerMode.CountDown => _form.NoteText.Length > 0
-                ? Locale.T("倒计时结束：", "Countdown finished: ") + _form.NoteText
-                : Locale.T("倒计时结束，回来看看。", "Countdown finished — time for a break."),
-            TimerMode.TargetTime => _form.NoteText.Length > 0
-                ? Locale.T("目标时刻到：", "Target time reached: ") + _form.NoteText
-                : _engine.DailyRepeat
-                    ? Locale.T("目标时刻到，明日此时再见。", "Target time reached — see you tomorrow.")
-                    : Locale.T("目标时刻到了！", "Target time reached!"),
-            _ => Locale.T("时间到！", "Time's up!"),
-        };
-        _tray.ShowBalloon(text);
-        _form.TriggerAlert();
+            var text = _engine.Mode switch
+            {
+                TimerMode.CountDown => _form.NoteText.Length > 0
+                    ? Locale.T("倒计时结束：", "Countdown finished: ") + _form.NoteText
+                    : Locale.T("倒计时结束，回来看看。", "Countdown finished — time for a break."),
+                TimerMode.TargetTime => _form.NoteText.Length > 0
+                    ? Locale.T("目标时刻到：", "Target time reached: ") + _form.NoteText
+                    : _engine.DailyRepeat
+                        ? Locale.T("目标时刻到，明日此时再见。", "Target time reached — see you tomorrow.")
+                        : Locale.T("目标时刻到了！", "Target time reached!"),
+                _ => Locale.T("时间到！", "Time's up!"),
+            };
+            _tray.ShowBalloon(text);
+            _form.TriggerAlert();
+        });
+    }
+
+    private void RunOnUiThread(Action action)
+    {
+        if (_form.IsDisposed) return;
+        if (!_form.IsHandleCreated)
+        {
+            action();
+            return;
+        }
+        if (!_form.InvokeRequired)
+        {
+            action();
+            return;
+        }
+        try { _form.BeginInvoke(action); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
     }
 
     private void SetAutoStart(bool enabled)

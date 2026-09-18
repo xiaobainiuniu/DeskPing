@@ -148,6 +148,8 @@ public sealed class MainForm : Form
     /// <summary>大数字随窗口大小缩放（拖动缩放窗口时保持比例协调）。</summary>
     private void RebuildFonts()
     {
+        if (!CanRunLayout) return;
+
         var scale = Math.Clamp(Math.Min(W / 264.0, H / 228.0), 0.62, 2.4);
         _fBig?.Dispose();
         _fBigAlert?.Dispose();
@@ -498,6 +500,14 @@ public sealed class MainForm : Form
 
     private int W => ClientSize.Width;
     private int H => ClientSize.Height;
+    // 最小化/隐藏切换期间客户区可能瞬时为 0；此时任何字体、Bounds 计算都没有有效依据
+    private bool CanRunLayout =>
+        !IsDisposed &&
+        !Disposing &&
+        WindowState != FormWindowState.Minimized &&
+        ClientSize.Width > 0 &&
+        ClientSize.Height > 0;
+
     // 计时一旦开始，隐藏设置区（输入框/备注/模式下拉），只展示核心内容；重置后恢复
     private bool ShowSettings => _engine.State == RunState.Stopped;
     // 自下而上：状态栏 → 按钮行 → 备注行 → 输入行 → 大数字区
@@ -544,6 +554,8 @@ public sealed class MainForm : Form
 
     private void LayoutInputs()
     {
+        if (!CanRunLayout) return;
+
         _txtNote.Bounds = InputBounds(NoteRect, _txtNote);
         SyncNoteMargins();
         if (_engine.Mode == TimerMode.CountDown)
@@ -601,6 +613,8 @@ public sealed class MainForm : Form
     /// <summary>数字框固定边距：按两位数字宽度一次算好，输入过程不再变动（光标稳定）。</summary>
     private void SyncInputMargins()
     {
+        if (!CanRunLayout) return;
+
         foreach (var tb in _inputs) SetInputMargins(tb);
     }
 
@@ -627,7 +641,7 @@ public sealed class MainForm : Form
     /// <summary>备注失焦 / 布局 / 换字体时调用一次：文字在框内水平居中（聚焦输入时保持小边距左对齐）。</summary>
     private void SyncNoteMargins()
     {
-        if (!_txtNote.IsHandleCreated || _txtNote.Focused) return; // 输入中不动边距
+        if (!CanRunLayout || !_txtNote.IsHandleCreated || _txtNote.Focused) return; // 输入中不动边距
         var w = TextRenderer.MeasureText(_txtNote.Text, _txtNote.Font, Size.Empty, TextFormatFlags.NoPadding).Width;
         var margin = Math.Max(0, (NoteRect.Width - w) / 2);
         SetNoteMargins(margin, margin);
@@ -642,7 +656,7 @@ public sealed class MainForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        if (_txtH == null) return; // 构造早期尚未创建输入框
+        if (_txtH == null || !CanRunLayout) return; // 构造早期/最小化期间不执行尺寸布局
         UpdateRoundedRegion();
         LayoutInputs();
         if (Math.Abs(W - _fontFitW) + Math.Abs(H - _fontFitH) > 12) RebuildFonts();

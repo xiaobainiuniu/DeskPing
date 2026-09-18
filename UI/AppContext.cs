@@ -73,11 +73,8 @@ public sealed class AppContext : ApplicationContext
     private void RunOnUiThread(Action action)
     {
         if (_form.IsDisposed) return;
-        if (!_form.IsHandleCreated)
-        {
-            action();
-            return;
-        }
+        // 句柄尚未创建时不能安全执行 UI 操作；Alarm 只会在窗体显示并开始计时后触发。
+        if (!_form.IsHandleCreated) return;
         if (!_form.InvokeRequired)
         {
             action();

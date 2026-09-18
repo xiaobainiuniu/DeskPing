@@ -80,14 +80,16 @@ public sealed class TimerEngine : IDisposable
         else StateChanged?.Invoke();
     }
 
-    public void Start()
+    public bool Start()
     {
-        if (State == RunState.Running) return;
+        if (State == RunState.Running) return true;
 
         if (Mode == TimerMode.TargetTime)
         {
-            // 目标已过则顺延到下一个匹配时刻。
             var now = DateTime.Now;
+            if (Target <= now && !DailyRepeat) return false;
+
+            // 每日重复目标若已错过，顺延到下一个未来时刻。
             while (Target <= now) Target = Target.AddDays(1);
         }
 
@@ -95,6 +97,7 @@ public sealed class TimerEngine : IDisposable
         State = RunState.Running;
         StateChanged?.Invoke();
         Ticked?.Invoke();
+        return true;
     }
 
     public void Pause()
@@ -141,8 +144,13 @@ public sealed class TimerEngine : IDisposable
     {
         if (Mode == TimerMode.TargetTime && DailyRepeat)
         {
-            // 每日重复：提醒后自动顺延一天，继续运行，不打断用户工作流。
-            Target = Target.AddDays(1);
+            // 每日重复：提醒后顺延到下一个未来时刻，继续运行，不打断用户工作流。
+            var now = DateTime.Now;
+            do
+            {
+                Target = Target.AddDays(1);
+            }
+            while (Target <= now);
             _elapsed = _elapsedBase + _clock.Elapsed;
         }
         else

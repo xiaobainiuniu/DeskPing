@@ -1207,7 +1207,12 @@ public sealed class MainForm : Form
                 _statusOverride = "";
                 if (_alerting) StopAlert();
                 else if (_engine.State == RunState.Running) _engine.Pause();
-                else _engine.Start();
+                else if (!_engine.Start())
+                {
+                    var message = Locale.T("目标时间已过去，请重新选择未来时间。", "The target time has passed. Please choose a future time.");
+                    FlashStatus(message);
+                    MessageBox.Show(this, message, "DeskPing", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
                 Invalidate();
                 break;
             case Zone.Reset:

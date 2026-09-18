@@ -43,6 +43,7 @@ public sealed class MainForm : Form
     private string _statusOverride = "";
     private Zone _hover = Zone.None, _pressed = Zone.None;
     private bool _syncingInputs;
+    private bool _countdownInputSyncQueued;
     private bool _clickWasFocused;
     private bool _noteHover;
     private int _fontFitW, _fontFitH;
@@ -447,8 +448,11 @@ public sealed class MainForm : Form
         if (_syncingInputs) return;
         if (!int.TryParse(_txtH.Text, out var h) || !int.TryParse(_txtM.Text, out var m) || !int.TryParse(_txtS.Text, out var s)) return;
         var ts = TimeSpan.FromSeconds(h * 3600 + m * 60 + s);
+        var needsCarrySync = h != (long)ts.TotalHours || m != ts.Minutes || s != ts.Seconds;
         if (ts.TotalSeconds != _engine.Duration.TotalSeconds)
             _engine.SetCountdown(ts);
+        if (needsCarrySync)
+            QueueCountdownCarrySync();
     }
 
     private void ApplyTargetInputs()
@@ -461,15 +465,18 @@ public sealed class MainForm : Form
             _engine.SetTarget(target, _engine.DailyRepeat);
     }
 
-    private void UpdateInputsFromEngine()
+    private void UpdateInputsFromEngine(bool forceFocusedCountdown = false)
     {
         _syncingInputs = true;
         try
         {
             var d = _engine.Duration;
-            SetInputText(_txtH, d.Hours.ToString("D2"));
-            SetInputText(_txtM, d.Minutes.ToString("D2"));
-            SetInputText(_txtS, d.Seconds.ToString("D2"));
+            if (!forceFocusedCountdown && CountdownCarryNeedsSync(d))
+                QueueCountdownCarrySync();
+
+            SetInputText(_txtH, ((long)d.TotalHours).ToString("D2"), forceFocusedCountdown);
+            SetInputText(_txtM, d.Minutes.ToString("D2"), forceFocusedCountdown);
+            SetInputText(_txtS, d.Seconds.ToString("D2"), forceFocusedCountdown);
 
             var t = _engine.Target;
             SetInputText(_txtTH, t.Hour.ToString("D2"));
@@ -486,10 +493,35 @@ public sealed class MainForm : Form
         SyncInputMargins();
     }
 
-    /// <summary>正在编辑的输入框不打断（避免打字时光标被拽走）；其余框规整为两位。</summary>
-    private static void SetInputText(TextBox tb, string text)
+    /// <summary>输入发生进位时，延迟到当前输入事件结束后再同步三个框，避免打断普通输入。</summary>
+    private bool CountdownCarryNeedsSync(TimeSpan duration)
     {
-        if (tb.Focused) return;
+        if (_txtH.Focused && int.TryParse(_txtH.Text, out var h))
+            return h != (long)duration.TotalHours;
+        if (_txtM.Focused && int.TryParse(_txtM.Text, out var m))
+            return m != duration.Minutes;
+        if (_txtS.Focused && int.TryParse(_txtS.Text, out var s))
+            return s != duration.Seconds;
+        return false;
+    }
+
+    private void QueueCountdownCarrySync()
+    {
+        if (_countdownInputSyncQueued || IsDisposed || Disposing || !IsHandleCreated) return;
+        _countdownInputSyncQueued = true;
+        BeginInvoke((Action)(() =>
+        {
+            _countdownInputSyncQueued = false;
+            if (IsDisposed || Disposing) return;
+            UpdateInputsFromEngine(forceFocusedCountdown: true);
+            Invalidate();
+        }));
+    }
+
+    /// <summary>正在编辑的输入框不打断（避免打字时光标被拽走）；其余框规整为两位。</summary>
+    private static void SetInputText(TextBox tb, string text, bool force = false)
+    {
+        if (tb.Focused && !force) return;
         if (tb.Text != text) tb.Text = text;
         if (tb.SelectionStart != tb.Text.Length) tb.SelectionStart = tb.Text.Length;
     }

@@ -56,16 +56,13 @@ jobs:
       - name: Package release
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path release -Force | Out-Null
-          $asset = "release/DeskPing-${{ steps.version.outputs.tag }}-win-x64.zip"
-          Compress-Archive -Path publish\* -DestinationPath $asset -Force
+          $packageName = "DeskPing-${{ steps.version.outputs.tag }}-win-x64"
+          $packageDir = Join-Path "release" $packageName
+          $asset = Join-Path "release" "$packageName.zip"
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: DeskPing-${{ steps.version.outputs.tag }}-win-x64
-          path: release/*.zip
-          if-no-files-found: error
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          Copy-Item -Path "publish\*" -Destination $packageDir -Recurse -Force
+          Compress-Archive -Path $packageDir -DestinationPath $asset -Force
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

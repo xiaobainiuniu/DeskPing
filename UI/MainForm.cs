@@ -39,6 +39,7 @@ public sealed class MainForm : Form
     private double _animPhase;
     private int _soundCountdown;
     private bool _flashActive, _everHidden;
+    private bool _isHidingToTray;
     private string _statusOverride = "";
     private Zone _hover = Zone.None, _pressed = Zone.None;
     private bool _syncingInputs;
@@ -151,23 +152,33 @@ public sealed class MainForm : Form
         if (!CanRunLayout) return;
 
         var scale = Math.Clamp(Math.Min(W / 264.0, H / 228.0), 0.62, 2.4);
-        _fBig?.Dispose();
-        _fBigAlert?.Dispose();
+        var oldBig = _fBig;
+        var oldBigAlert = _fBigAlert;
         _fBig = new Font(PaperTheme.FontName, (float)(38 * scale));
         _fBigAlert = new Font(PaperTheme.FontName, (float)(28 * scale), FontStyle.Bold);
 
         // 输入框字号温和跟随窗口缩放（封顶：数字不能撑出小框）
         var inputSize = Math.Clamp(scale, 0.8f, 1.25f);
-        foreach (var tb in _inputs)
+        var oldInputFonts = new Font[_inputs.Length];
+        for (var i = 0; i < _inputs.Length; i++)
         {
-            var old = tb.Font;
+            var tb = _inputs[i];
+            oldInputFonts[i] = tb.Font;
             tb.Font = new Font(PaperTheme.FontName, (float)(9.5 * inputSize));
-            old.Dispose();
         }
         var oldNote = _txtNote.Font;
         _txtNote.Font = new Font(PaperTheme.FontName, (float)(9 * inputSize));
-        oldNote.Dispose();
+
+        // 先让控件完全切换到新字体并完成布局，再释放旧字体。
+        // 若某个 TextBox 因隐藏/窗口状态仍未切换，也不能释放它当前持有的 Font。
         LayoutInputs(); // 行高随字号变化，控件在框内重新居中
+        oldBig?.Dispose();
+        oldBigAlert?.Dispose();
+        foreach (var old in oldInputFonts)
+        {
+            if (!_inputs.Any(tb => ReferenceEquals(tb.Font, old))) old.Dispose();
+        }
+        if (!ReferenceEquals(_txtNote.Font, oldNote)) oldNote.Dispose();
 
         _fontFitW = W;
         _fontFitH = H;
@@ -281,9 +292,11 @@ public sealed class MainForm : Form
 
     public void ShowWindow()
     {
-        Show();
+        _isHidingToTray = false;
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Show();
         Activate();
+        RefreshLayout();
         Invalidate();
     }
 
@@ -326,6 +339,9 @@ public sealed class MainForm : Form
 
     private void HideToTray()
     {
+        if (_isHidingToTray) return;
+        _isHidingToTray = true; // 隐藏期间及挂起的 BeginInvoke 都不得再做尺寸/字体布局
+
         CloseModePopup();
         Hide();
         if (!_everHidden)
@@ -504,6 +520,7 @@ public sealed class MainForm : Form
     private bool CanRunLayout =>
         !IsDisposed &&
         !Disposing &&
+        !_isHidingToTray &&
         WindowState != FormWindowState.Minimized &&
         ClientSize.Width > 0 &&
         ClientSize.Height > 0;
@@ -653,13 +670,19 @@ public sealed class MainForm : Form
         SetMargins(_txtNote, left, right);
     }
 
-    protected override void OnResize(EventArgs e)
+    private void RefreshLayout()
     {
-        base.OnResize(e);
-        if (_txtH == null || !CanRunLayout) return; // 构造早期/最小化期间不执行尺寸布局
+        if (!CanRunLayout) return;
         UpdateRoundedRegion();
         LayoutInputs();
         if (Math.Abs(W - _fontFitW) + Math.Abs(H - _fontFitH) > 12) RebuildFonts();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_txtH == null || !CanRunLayout) return; // 构造早期/最小化/隐藏到托盘期间不执行尺寸布局
+        RefreshLayout();
         Invalidate();
     }
 
